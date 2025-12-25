@@ -7,6 +7,7 @@ import pandas as pd
 import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output
+import dash_bootstrap_components as dbc
 
 # ================== CONFIG ==================
 INTERFACE = "wlp1s0"
@@ -47,7 +48,7 @@ def get_rtt():
 
 def logger_loop():
     global df
-    print("📡 L2 logger started")
+    print("Starting Wi-Fi Performance Evaluation and Monitoring Interface Logger")
 
     while True:
         ts = time.time()
@@ -74,11 +75,12 @@ threading.Thread(target=logger_loop, daemon=True).start()
 
 # ---------------- DASH APP -------------------
 
-app = dash.Dash(__name__)
-app.title = "Live Wi-Fi Dashboard (L2)"
+# Initialize the app with a dark theme
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.DARKLY])
+app.title = "Wi-Fi Performance Evaluation and Monitoring Interface"
 
 app.layout = html.Div([
-    html.H1("📡 Live Wi-Fi Performance Dashboard (L2)"),
+    html.H1("Wi-Fi Performance Evaluation and Monitoring Interface", style={"textAlign": "center", "color": "#FFFFFF"}),
 
     dcc.Interval(
         id="interval",
@@ -89,13 +91,15 @@ app.layout = html.Div([
     html.Div(id="metrics", style={
         "display": "flex",
         "gap": "30px",
-        "marginBottom": "20px"
+        "marginBottom": "20px",
+        "justifyContent": "center",
+        "color": "#FFFFFF"
     }),
 
-    dcc.Graph(id="rssi_graph"),
-    dcc.Graph(id="rtt_graph"),
-    dcc.Graph(id="bitrate_graph")
-])
+    dcc.Graph(id="rssi_graph", style={"backgroundColor": "#1E1E1E"}),
+    dcc.Graph(id="rtt_graph", style={"backgroundColor": "#1E1E1E"}),
+    dcc.Graph(id="bitrate_graph", style={"backgroundColor": "#1E1E1E"})
+], style={"backgroundColor": "#121212", "padding": "20px"})
 
 @app.callback(
     Output("metrics", "children"),
@@ -111,10 +115,10 @@ def update_dashboard(_):
     latest = df.iloc[-1]
 
     metrics = [
-        html.Div([html.H4("RSSI (dBm)"), html.H2(latest["rssi_dbm"])]),
-        html.Div([html.H4("RX PHY (Mbps)"), html.H2(latest["rx_bitrate_mbps"])]),
-        html.Div([html.H4("TX PHY (Mbps)"), html.H2(latest["tx_bitrate_mbps"])]),
-        html.Div([html.H4("RTT (ms)"), html.H2(latest["rtt_ms"])])
+        html.Div([html.H4("RSSI (dBm)", style={"color": "#FFFFFF"}), html.H2(latest["rssi_dbm"], style={"color": "#FFFFFF"})]),
+        html.Div([html.H4("RX PHY (Mbps)", style={"color": "#FFFFFF"}), html.H2(latest["rx_bitrate_mbps"], style={"color": "#FFFFFF"})]),
+        html.Div([html.H4("TX PHY (Mbps)", style={"color": "#FFFFFF"}), html.H2(latest["tx_bitrate_mbps"], style={"color": "#FFFFFF"})]),
+        html.Div([html.H4("RTT (ms)", style={"color": "#FFFFFF"}), html.H2(latest["rtt_ms"], style={"color": "#FFFFFF"})])
     ]
 
     rssi_fig = {
@@ -122,9 +126,10 @@ def update_dashboard(_):
             "x": df["timestamp"],
             "y": df["rssi_dbm"],
             "type": "line",
-            "name": "RSSI"
+            "name": "RSSI",
+            "line": {"color": "#FF5733"}
         }],
-        "layout": {"title": "RSSI Over Time"}
+        "layout": {"title": "RSSI Over Time", "plot_bgcolor": "#121212", "paper_bgcolor": "#121212", "font": {"color": "#FFFFFF"}}
     }
 
     rtt_fig = {
@@ -132,9 +137,10 @@ def update_dashboard(_):
             "x": df["timestamp"],
             "y": df["rtt_ms"],
             "type": "line",
-            "name": "RTT"
+            "name": "RTT",
+            "line": {"color": "#33FF57"}
         }],
-        "layout": {"title": "RTT Over Time"}
+        "layout": {"title": "RTT Over Time", "plot_bgcolor": "#121212", "paper_bgcolor": "#121212", "font": {"color": "#FFFFFF"}}
     }
 
     bitrate_fig = {
@@ -143,16 +149,18 @@ def update_dashboard(_):
                 "x": df["timestamp"],
                 "y": df["rx_bitrate_mbps"],
                 "type": "line",
-                "name": "RX PHY"
+                "name": "RX PHY",
+                "line": {"color": "#3357FF"}
             },
             {
                 "x": df["timestamp"],
                 "y": df["tx_bitrate_mbps"],
                 "type": "line",
-                "name": "TX PHY"
+                "name": "TX PHY",
+                "line": {"color": "#FF33A1"}
             }
         ],
-        "layout": {"title": "PHY Bitrate Over Time"}
+        "layout": {"title": "PHY Bitrate Over Time", "plot_bgcolor": "#121212", "paper_bgcolor": "#121212", "font": {"color": "#FFFFFF"}}
     }
 
     return metrics, rssi_fig, rtt_fig, bitrate_fig
@@ -160,5 +168,5 @@ def update_dashboard(_):
 # ---------------- RUN ------------------------
 
 if __name__ == "__main__":
-    print("🚀 Starting Dash server at http://127.0.0.1:8050")
+    print("Starting Dash server at http://127.0.0.1:8050")
     app.run(debug=False)
