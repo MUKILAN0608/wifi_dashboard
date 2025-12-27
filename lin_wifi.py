@@ -14,6 +14,7 @@ import plotly.graph_objs as go
 
 
 # ================= CONFIGURATION =================
+INTERFACE = "wlp1s0"
 PING_TARGET = "8.8.8.8"
 SAMPLE_INTERVAL_SECONDS = 0.5
 MAX_DATA_POINTS = 600
@@ -43,9 +44,9 @@ metrics_dataframe = pd.DataFrame({
 
 # ================= DATA COLLECTION =================
 
-def collect_wifi_metrics_windows() -> Tuple[Optional[int], Optional[int], Optional[float], Optional[float], Optional[float], Optional[int], Optional[str], Optional[str], Optional[str]]:
+def collect_wifi_metrics_linux() -> Tuple[Optional[int], Optional[int], Optional[float], Optional[float], Optional[float], Optional[int], Optional[str], Optional[str], Optional[str]]:
     """
-    Collects Wi-Fi interface metrics from Windows system using netsh.
+    Collects Wi-Fi interface metrics from Linux system using iw and iwconfig.
     Optimized with timeout and error handling to prevent blocking.
     
     Returns:
@@ -53,47 +54,130 @@ def collect_wifi_metrics_windows() -> Tuple[Optional[int], Optional[int], Option
         Returns None for any metric that cannot be retrieved.
     """
     try:
-        output = subprocess.check_output(
-            ["netsh", "wlan", "show", "interfaces"],
+        # Get connection info using 'iw dev <interface> link'
+        link_output = subprocess.check_output(
+            ["iw", "dev", INTERFACE, "link"],
             text=True,
             encoding="utf-8",
             errors="ignore",
-            timeout=2,  # Reduced timeout to prevent blocking
+            timeout=2,
             stderr=subprocess.DEVNULL
         )
-
-        signal_match = re.search(r"Signal\s+:\s+(\d+)%", output)
-        rssi_match = re.search(r"Rssi\s+:\s+(-?\d+)", output)
-        rx_match = re.search(r"Receive rate \(Mbps\)\s+:\s+([\d\.]+)", output)
-        tx_match = re.search(r"Transmit rate \(Mbps\)\s+:\s+([\d\.]+)", output)
-        channel_match = re.search(r"Channel\s+:\s+(\d+)", output)
-        ssid_match = re.search(r"SSID\s+:\s+(.+)", output)
-        bssid_match = re.search(r"BSSID\s+:\s+([0-9A-Fa-f:]+)", output)
-        radio_match = re.search(r"Radio type\s+:\s+(.+)", output)
-
-        # Calculate average link speed
-        rx_val = float(rx_match.group(1)) if rx_match else 0
-        tx_val = float(tx_match.group(1)) if tx_match else 0
-        link_speed = (rx_val + tx_val) / 2 if (rx_val > 0 and tx_val > 0) else (rx_val or tx_val)
-
+        
+        # Get detailed info using 'iw dev <interface> info'
+        info_output = subprocess.check_output(
+            ["iw", "dev", INTERFACE, "info"],
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=2,
+            stderr=subprocess.DEVNULL
+        )
+        
+        # Get signal strength using iwconfig (more reliable for signal percentage)
+        try:
+            iwconfig_output = subprocess.check_output(
+                ["iwconfig", INTERFACE],
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=2,
+                stderr=subprocess.DEVNULL
+            )
+        except:
+            iwconfig_output = ""
+        
+        # Parse SSID
+        ssid_match = re.search(r"SSID:\s*(.+)", link_output)
+        if not ssid_match:
+            ssid_match = re.search(r'ESSID:"([^"]+)"', iwconfig_output)
+        ssid = ssid_match.group(1).strip() if ssid_match else None
+        
+        # Parse BSSID (MAC address)
+        bssid_match = re.search(r"Connected to\s+([0-9a-fA-F:]{17})", link_output)
+        if not bssid_match:
+            bssid_match = re.search(r"Access Point:\s+([0-9a-fA-F:]{17})", link_output)
+        bssid = bssid_match.group(1).strip() if bssid_match else None
+        
+        # Parse signal strength (dBm)
+        rssi_match = re.search(r"signal:\s*(-?\d+)\s*dBm", link_output)
+        if not rssi_match:
+            rssi_match = re.search(r"Signal level=(-?\d+)\s*dBm", iwconfig_output)
+        rssi = int(rssi_match.group(1)) if rssi_match else None
+        
+        # Convert RSSI to signal percentage (typical range: -30 to -90 dBm)
+        # -30 dBm = 100%, -90 dBm = 0%
+        if rssi is not None:
+            signal_percent = max(0, min(100, int((rssi + 90) / 60 * 100)))
+        else:
+            # Try to get signal percentage from iwconfig
+            signal_match = re.search(r"Signal level=(-?\d+)/(\d+)", iwconfig_output)
+            if signal_match:
+                signal_val = int(signal_match.group(1))
+                signal_max = int(signal_match.group(2))
+                signal_percent = int((signal_val / signal_max) * 100) if signal_max > 0 else None
+            else:
+                signal_percent = None
+        
+        # Parse channel
+        channel_match = re.search(r"freq:\s*(\d+)", link_output)
+        if not channel_match:
+            channel_match = re.search(r"Channel:\s*(\d+)", iwconfig_output)
+        channel = None
+        if channel_match:
+            freq = int(channel_match.group(1))
+            # Convert frequency to channel (2.4 GHz: 2412-2484, 5 GHz: 5180-5825)
+            if 2412 <= freq <= 2484:
+                channel = (freq - 2412) // 5 + 1
+            elif 5180 <= freq <= 5825:
+                channel = (freq - 5180) // 5 + 36
+        
+        # Parse radio type/standard
+        radio_match = re.search(r"type\s+(\w+)", info_output)
+        if not radio_match:
+            radio_match = re.search(r"IEEE\s+802\.11(\w+)", iwconfig_output)
+        radio = None
+        if radio_match:
+            radio_type = radio_match.group(1).upper()
+            if "A" in radio_type or "AC" in radio_type:
+                radio = "802.11ac"
+            elif "N" in radio_type:
+                radio = "802.11n"
+            elif "AX" in radio_type or "6" in radio_type:
+                radio = "802.11ax"
+            else:
+                radio = f"802.11{radio_type}"
+        
+        # Get TX bitrate (Mbps)
+        tx_match = re.search(r"tx bitrate:\s*([\d\.]+)\s*MBit/s", link_output)
+        if not tx_match:
+            tx_match = re.search(r"Bit Rate[:=]\s*([\d\.]+)\s*Mb/s", iwconfig_output)
+        tx_rate = float(tx_match.group(1)) if tx_match else None
+        
+        # RX rate is typically same as TX for most interfaces
+        rx_rate = tx_rate
+        
+        # Calculate link speed
+        link_speed = (rx_rate + tx_rate) / 2 if (rx_rate and tx_rate) else (rx_rate or tx_rate or None)
+        
         return (
-            int(signal_match.group(1)) if signal_match else None,
-            int(rssi_match.group(1)) if rssi_match else None,
-            float(rx_match.group(1)) if rx_match else None,
-            float(tx_match.group(1)) if tx_match else None,
+            signal_percent,
+            rssi,
+            rx_rate,
+            tx_rate,
             link_speed,
-            int(channel_match.group(1)) if channel_match else None,
-            ssid_match.group(1).strip() if ssid_match else None,
-            bssid_match.group(1).strip() if bssid_match else None,
-            radio_match.group(1).strip() if radio_match else None
+            channel,
+            ssid,
+            bssid,
+            radio
         )
     except (subprocess.SubprocessError, subprocess.TimeoutExpired, ValueError, Exception) as e:
         # Silent error handling to prevent console spam
         return None, None, None, None, None, None, None, None, None
 
-def collect_rtt_windows(target: str = PING_TARGET) -> Optional[float]:
+def collect_rtt_linux(target: str = PING_TARGET) -> Optional[float]:
     """
-    Collects Round-Trip Time (RTT) latency using Windows ping command.
+    Collects Round-Trip Time (RTT) latency using Linux ping command.
     
     Args:
         target: Ping target IP address or hostname
@@ -102,23 +186,22 @@ def collect_rtt_windows(target: str = PING_TARGET) -> Optional[float]:
         RTT in milliseconds, or None if ping fails
     """
     try:
-        # Windows ping command: ping -n 1 -w 1000 target
-        cmd = ["ping", "-n", "1", "-w", "500", target]  # Reduced wait time
+        # Linux ping command: ping -c 1 -W 1 target
+        cmd = ["ping", "-c", "1", "-W", "1", target]
         output = subprocess.check_output(
             cmd,
             text=True,
             encoding="utf-8",
             errors="ignore",
-            timeout=1.5,  # Reduced timeout to prevent blocking
+            timeout=1.5,
             stderr=subprocess.DEVNULL
         )
         
-        # Windows ping output pattern: "time=XXms" or "time<1ms" or "time=XXms TTL=XX"
-        # Try multiple patterns
+        # Linux ping output pattern: "time=XX.XXX ms" or "time=XXms"
         patterns = [
-            r"time[<=](\d+)ms",  # time=XXms or time<1ms
-            r"time=([\d\.]+)ms",  # time=XX.XXms
-            r"(\d+)ms",  # Just XXms (fallback)
+            r"time=([\d\.]+)\s*ms",  # time=XX.XXX ms
+            r"time<(\d+)\s*ms",  # time<1ms
+            r"(\d+\.?\d*)\s*ms",  # Just XX.XXX ms (fallback)
         ]
         
         for pattern in patterns:
@@ -188,38 +271,38 @@ def detect_anomaly(df: pd.DataFrame, current_idx: int, window: int = 10) -> int:
         return 0
     
     try:
-    current = df.iloc[current_idx]
-    recent = df.iloc[max(0, current_idx - window):current_idx]
+        current = df.iloc[current_idx]
+        recent = df.iloc[max(0, current_idx - window):current_idx]
     except (IndexError, KeyError):
         return 0
     
     try:
-    # Check for signal drop > 20%
-    if pd.notna(current['signal_percent']) and len(recent) > 0:
-        signal_vals = recent['signal_percent'].dropna()
-        if len(signal_vals) > 0:
-            avg_signal = signal_vals.mean()
+        # Check for signal drop > 20%
+        if pd.notna(current['signal_percent']) and len(recent) > 0:
+            signal_vals = recent['signal_percent'].dropna()
+            if len(signal_vals) > 0:
+                avg_signal = signal_vals.mean()
                 if pd.notna(avg_signal) and avg_signal > 0 and pd.notna(current['signal_percent']) and current['signal_percent'] < avg_signal - 20:
-                return 1
-    
-    # Check for high RTT (> 100ms or sudden spike)
-    if pd.notna(current['rtt_ms']):
-        if current['rtt_ms'] > 100:
-            return 1
-        if len(recent) > 0:
-            rtt_vals = recent['rtt_ms'].dropna()
-            if len(rtt_vals) > 0:
-                avg_rtt = rtt_vals.mean()
-                    if pd.notna(avg_rtt) and avg_rtt > 0 and pd.notna(current['rtt_ms']) and current['rtt_ms'] > avg_rtt * 2:
                     return 1
-    
-    # Check for throughput drop > 50%
-    if pd.notna(current['rx_mbps']) and len(recent) > 0:
-        rx_vals = recent['rx_mbps'].dropna()
-        if len(rx_vals) > 0:
-            avg_rx = rx_vals.mean()
-                if pd.notna(avg_rx) and avg_rx > 0 and pd.notna(current['rx_mbps']) and current['rx_mbps'] < avg_rx * 0.5:
+        
+        # Check for high RTT (> 100ms or sudden spike)
+        if pd.notna(current['rtt_ms']):
+            if current['rtt_ms'] > 100:
                 return 1
+            if len(recent) > 0:
+                rtt_vals = recent['rtt_ms'].dropna()
+                if len(rtt_vals) > 0:
+                    avg_rtt = rtt_vals.mean()
+                    if pd.notna(avg_rtt) and avg_rtt > 0 and pd.notna(current['rtt_ms']) and current['rtt_ms'] > avg_rtt * 2:
+                        return 1
+        
+        # Check for throughput drop > 50%
+        if pd.notna(current['rx_mbps']) and len(recent) > 0:
+            rx_vals = recent['rx_mbps'].dropna()
+            if len(rx_vals) > 0:
+                avg_rx = rx_vals.mean()
+                if pd.notna(avg_rx) and avg_rx > 0 and pd.notna(current['rx_mbps']) and current['rx_mbps'] < avg_rx * 0.5:
+                    return 1
     except (KeyError, IndexError, ValueError, TypeError):
         # Return 0 (no anomaly) if any error occurs during detection
         return 0
@@ -239,8 +322,8 @@ def data_collection_worker():
     while True:
         try:
             timestamp = time.time()
-            signal, rssi, rx_rate, tx_rate, link_speed, channel, ssid, bssid, radio = collect_wifi_metrics_windows()
-            rtt_ms = collect_rtt_windows()
+            signal, rssi, rx_rate, tx_rate, link_speed, channel, ssid, bssid, radio = collect_wifi_metrics_linux()
+            rtt_ms = collect_rtt_linux()
             
             # Calculate bandwidth utilization based on theoretical max for WiFi
             # Estimate max bandwidth based on radio type for better utilization calculation
@@ -292,10 +375,10 @@ def data_collection_worker():
             
             # Calculate stability outside lock to minimize blocking - async style
             # Get current length and copy for calculations
-                    with data_lock:
+            with data_lock:
                 current_length = len(metrics_dataframe)
                 if current_length >= 20:
-                        df_copy = metrics_dataframe.copy()
+                    df_copy = metrics_dataframe.copy()
                 else:
                     df_copy = None
             
@@ -306,16 +389,16 @@ def data_collection_worker():
                     
                     # Validate index before using
                     if current_idx >= 0 and current_idx < len(df_copy):
-                    # Calculate outside lock
-                    stability = calculate_stability_score(df_copy)
-                    anomaly = detect_anomaly(df_copy, current_idx)
-                    
+                        # Calculate outside lock
+                        stability = calculate_stability_score(df_copy)
+                        anomaly = detect_anomaly(df_copy, current_idx)
+                        
                         # Update with lock - verify index is still valid
-                    with data_lock:
+                        with data_lock:
                             # Re-check length in case DataFrame was trimmed
-                        if current_idx < len(metrics_dataframe):
-                            metrics_dataframe.at[current_idx, 'stability_score'] = stability
-                            metrics_dataframe.at[current_idx, 'anomaly_flag'] = anomaly
+                            if current_idx < len(metrics_dataframe):
+                                metrics_dataframe.at[current_idx, 'stability_score'] = stability
+                                metrics_dataframe.at[current_idx, 'anomaly_flag'] = anomaly
                 except (IndexError, KeyError, ValueError) as calc_error:
                     # Log error for debugging but don't block
                     print(f"Warning: Calculation error (non-critical): {calc_error}")
@@ -526,10 +609,10 @@ app.layout = html.Div(style={
             "backdropFilter": "blur(24px)",
             "position": "relative"
         }, children=[
-                html.H3("Key Performance Indicators", style={
+            html.H3("Key Performance Indicators", style={
                 "margin": "0 0 28px 0",
                 "fontSize": "22px",
-                    "color": THEME_COLORS["text_primary"],
+                "color": THEME_COLORS["text_primary"],
                 "fontWeight": "700",
                 "letterSpacing": "0.5px",
                 "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif",
@@ -699,82 +782,82 @@ def update_dashboard_components(n: int):
     conn_badges = [
         html.Div(
             style={
-            "display": "flex",
-            "alignItems": "center",
+                "display": "flex",
+                "alignItems": "center",
                 "gap": "10px",
-            "padding": "12px 20px",
-            "background": f"linear-gradient(135deg, {THEME_COLORS['card']} 0%, {THEME_COLORS['card_hover']} 100%)",
-            "borderRadius": "10px",
-            "border": f"1px solid {THEME_COLORS['border']}",
+                "padding": "12px 20px",
+                "background": f"linear-gradient(135deg, {THEME_COLORS['card']} 0%, {THEME_COLORS['card_hover']} 100%)",
+                "borderRadius": "10px",
+                "border": f"1px solid {THEME_COLORS['border']}",
                 "boxShadow": "0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
                 "transition": "all 0.3s ease",
                 "cursor": "help"
             },
             title="SSID (Service Set Identifier): The name of the WiFi network you are connected to.",
             children=[
-            html.Span("SSID", style={"fontWeight": "600", "color": THEME_COLORS["text_secondary"], "fontSize": "11px", "textTransform": "uppercase", "letterSpacing": "0.5px", "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"}),
-            html.Span("•", style={"color": THEME_COLORS["border"], "fontSize": "10px", "margin": "0 4px"}),
-            html.Span(conn_info["ssid"], style={"color": THEME_COLORS["text_primary"], "fontWeight": "500", "fontSize": "13px", "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"})
+                html.Span("SSID", style={"fontWeight": "600", "color": THEME_COLORS["text_secondary"], "fontSize": "11px", "textTransform": "uppercase", "letterSpacing": "0.5px", "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"}),
+                html.Span("•", style={"color": THEME_COLORS["border"], "fontSize": "10px", "margin": "0 4px"}),
+                html.Span(conn_info["ssid"], style={"color": THEME_COLORS["text_primary"], "fontWeight": "500", "fontSize": "13px", "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"})
             ]
         ),
         html.Div(
             style={
-            "display": "flex",
-            "alignItems": "center",
-            "gap": "10px",
+                "display": "flex",
+                "alignItems": "center",
+                "gap": "10px",
                 "padding": "12px 20px",
                 "background": f"linear-gradient(135deg, {THEME_COLORS['card']} 0%, {THEME_COLORS['card_hover']} 100%)",
                 "borderRadius": "10px",
-            "border": f"1px solid {THEME_COLORS['border']}",
+                "border": f"1px solid {THEME_COLORS['border']}",
                 "boxShadow": "0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
                 "transition": "all 0.3s ease",
                 "cursor": "help"
             },
             title="Radio Type: The WiFi standard being used (e.g., 802.11ac, 802.11ax/WiFi 6). Determines maximum speed and features.",
             children=[
-            html.Span("Radio", style={"fontWeight": "600", "color": THEME_COLORS["text_secondary"], "fontSize": "11px", "textTransform": "uppercase", "letterSpacing": "0.5px", "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"}),
-            html.Span("•", style={"color": THEME_COLORS["border"], "fontSize": "10px", "margin": "0 4px"}),
-            html.Span(conn_info["radio"], style={"color": THEME_COLORS["text_primary"], "fontWeight": "500", "fontSize": "13px", "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"})
+                html.Span("Radio", style={"fontWeight": "600", "color": THEME_COLORS["text_secondary"], "fontSize": "11px", "textTransform": "uppercase", "letterSpacing": "0.5px", "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"}),
+                html.Span("•", style={"color": THEME_COLORS["border"], "fontSize": "10px", "margin": "0 4px"}),
+                html.Span(conn_info["radio"], style={"color": THEME_COLORS["text_primary"], "fontWeight": "500", "fontSize": "13px", "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"})
             ]
         ),
         html.Div(
             style={
-            "display": "flex",
-            "alignItems": "center",
-            "gap": "10px",
+                "display": "flex",
+                "alignItems": "center",
+                "gap": "10px",
                 "padding": "12px 20px",
                 "background": f"linear-gradient(135deg, {THEME_COLORS['card']} 0%, {THEME_COLORS['card_hover']} 100%)",
                 "borderRadius": "10px",
-            "border": f"1px solid {THEME_COLORS['border']}",
+                "border": f"1px solid {THEME_COLORS['border']}",
                 "boxShadow": "0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
                 "transition": "all 0.3s ease",
                 "cursor": "help"
             },
             title="Channel: The WiFi frequency channel number. Different channels help avoid interference from other networks.",
             children=[
-            html.Span("Channel", style={"fontWeight": "600", "color": THEME_COLORS["text_secondary"], "fontSize": "11px", "textTransform": "uppercase", "letterSpacing": "0.5px", "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"}),
-            html.Span("•", style={"color": THEME_COLORS["border"], "fontSize": "10px", "margin": "0 4px"}),
-            html.Span(conn_info["channel"], style={"color": THEME_COLORS["text_primary"], "fontWeight": "500", "fontSize": "13px", "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"})
+                html.Span("Channel", style={"fontWeight": "600", "color": THEME_COLORS["text_secondary"], "fontSize": "11px", "textTransform": "uppercase", "letterSpacing": "0.5px", "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"}),
+                html.Span("•", style={"color": THEME_COLORS["border"], "fontSize": "10px", "margin": "0 4px"}),
+                html.Span(conn_info["channel"], style={"color": THEME_COLORS["text_primary"], "fontWeight": "500", "fontSize": "13px", "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"})
             ]
         ),
         html.Div(
             style={
-            "display": "flex",
-            "alignItems": "center",
+                "display": "flex",
+                "alignItems": "center",
                 "gap": "10px",
-            "padding": "12px 20px",
-            "background": f"linear-gradient(135deg, {THEME_COLORS['card']} 0%, {THEME_COLORS['card_hover']} 100%)",
-            "borderRadius": "10px",
-            "border": f"1px solid {THEME_COLORS['border']}",
+                "padding": "12px 20px",
+                "background": f"linear-gradient(135deg, {THEME_COLORS['card']} 0%, {THEME_COLORS['card_hover']} 100%)",
+                "borderRadius": "10px",
+                "border": f"1px solid {THEME_COLORS['border']}",
                 "boxShadow": "0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
                 "transition": "all 0.3s ease",
                 "cursor": "help"
             },
             title="BSSID (Basic Service Set Identifier): The MAC address of the access point you are connected to. Unique identifier for the access point.",
             children=[
-            html.Span("BSSID", style={"fontWeight": "600", "color": THEME_COLORS["text_secondary"], "fontSize": "11px", "textTransform": "uppercase", "letterSpacing": "0.5px", "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"}),
-            html.Span("•", style={"color": THEME_COLORS["border"], "fontSize": "10px", "margin": "0 4px"}),
-            html.Span(conn_info.get("bssid", "N/A"), style={"color": THEME_COLORS["text_primary"], "fontWeight": "500", "fontSize": "11px", "fontFamily": "'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace"})
+                html.Span("BSSID", style={"fontWeight": "600", "color": THEME_COLORS["text_secondary"], "fontSize": "11px", "textTransform": "uppercase", "letterSpacing": "0.5px", "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"}),
+                html.Span("•", style={"color": THEME_COLORS["border"], "fontSize": "10px", "margin": "0 4px"}),
+                html.Span(conn_info.get("bssid", "N/A"), style={"color": THEME_COLORS["text_primary"], "fontWeight": "500", "fontSize": "11px", "fontFamily": "'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace"})
             ]
         )
     ]
@@ -948,23 +1031,23 @@ def create_metric_cards(latest: pd.Series) -> list:
             style={**CARD_STYLE, "cursor": "help"},
             title=metric.get("tooltip", ""),
             children=[
-            html.Div(metric["label"], style={
-                "fontSize": "11px",
-                "color": THEME_COLORS["text_secondary"],
+                html.Div(metric["label"], style={
+                    "fontSize": "11px",
+                    "color": THEME_COLORS["text_secondary"],
                     "marginBottom": "12px",
-                "fontWeight": "600",
-                "textTransform": "uppercase",
+                    "fontWeight": "600",
+                    "textTransform": "uppercase",
                     "letterSpacing": "1px",
-                "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
-            }),
-            html.Div(metric["value"], style={
+                    "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
+                }),
+                html.Div(metric["value"], style={
                     "fontSize": "28px",
-                "fontWeight": "700",
-                "color": metric["color"],
-                "letterSpacing": "-0.5px",
+                    "fontWeight": "700",
+                    "color": metric["color"],
+                    "letterSpacing": "-0.5px",
                     "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif",
                     "textShadow": f"0 2px 8px {metric['color']}40"
-            })
+                })
             ]
         ) for metric in metrics
     ]
@@ -1037,39 +1120,39 @@ def create_kpi_cards(df: pd.DataFrame) -> list:
     return [
         html.Div(
             style={
-            **CARD_STYLE,
-            "background": f"linear-gradient(135deg, {THEME_COLORS['card']} 0%, #1e2a3a 100%)",
-            "borderLeft": f"4px solid {kpi['color']}",
-            "boxShadow": f"0 4px 16px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 20px {kpi['color']}20",
+                **CARD_STYLE,
+                "background": f"linear-gradient(135deg, {THEME_COLORS['card']} 0%, #1e2a3a 100%)",
+                "borderLeft": f"4px solid {kpi['color']}",
+                "boxShadow": f"0 4px 16px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 20px {kpi['color']}20",
                 "cursor": "help"
             },
             title=kpi.get("tooltip", ""),
             children=[
-            html.Div(kpi["label"], style={
-                "fontSize": "11px",
-                "color": THEME_COLORS["text_secondary"],
+                html.Div(kpi["label"], style={
+                    "fontSize": "11px",
+                    "color": THEME_COLORS["text_secondary"],
                     "marginBottom": "12px",
-                "fontWeight": "600",
-                "textTransform": "uppercase",
+                    "fontWeight": "600",
+                    "textTransform": "uppercase",
                     "letterSpacing": "1px",
-                "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
-            }),
-            html.Div(kpi["value"], style={
+                    "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
+                }),
+                html.Div(kpi["value"], style={
                     "fontSize": "32px",
-                "fontWeight": "700",
-                "color": kpi["color"],
+                    "fontWeight": "700",
+                    "color": kpi["color"],
                     "marginBottom": "8px",
-                "letterSpacing": "-0.5px",
+                    "letterSpacing": "-0.5px",
                     "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif",
                     "textShadow": f"0 2px 8px {kpi['color']}40"
-            }),
-            html.Div(kpi["status"], style={
+                }),
+                html.Div(kpi["status"], style={
                     "fontSize": "13px",
-                "color": kpi["color"],
-                "fontWeight": "500",
+                    "color": kpi["color"],
+                    "fontWeight": "500",
                     "letterSpacing": "0.5px",
-                "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
-            })
+                    "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
+                })
             ]
         ) for kpi in kpis
     ]
