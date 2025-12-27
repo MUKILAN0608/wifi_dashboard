@@ -18,6 +18,7 @@ import plotly.graph_objs as go
 
 
 # ================= CONFIGURATION =================
+INTERFACE = "wlp1s0"
 PING_TARGET = "8.8.8.8"
 SAMPLE_INTERVAL_SECONDS = 0.5
 MAX_DATA_POINTS = 600
@@ -49,9 +50,9 @@ metrics_dataframe = pd.DataFrame({
 
 # ================= DATA COLLECTION =================
 
-def collect_wifi_metrics_windows() -> Tuple[Optional[int], Optional[int], Optional[float], Optional[float], Optional[float], Optional[int], Optional[str], Optional[str], Optional[str]]:
+def collect_wifi_metrics_linux() -> Tuple[Optional[int], Optional[int], Optional[float], Optional[float], Optional[float], Optional[int], Optional[str], Optional[str], Optional[str]]:
     """
-    Collects Wi-Fi interface metrics from Windows system using netsh.
+    Collects Wi-Fi interface metrics from Linux system using iw and iwconfig.
     Optimized with timeout and error handling to prevent blocking.
     
     Returns:
@@ -59,47 +60,98 @@ def collect_wifi_metrics_windows() -> Tuple[Optional[int], Optional[int], Option
         Returns None for any metric that cannot be retrieved.
     """
     try:
-        output = subprocess.check_output(
-            ["netsh", "wlan", "show", "interfaces"],
+        # Get link info using iw
+        iw_output = subprocess.check_output(
+            ["iw", "dev", INTERFACE, "link"],
             text=True,
             encoding="utf-8",
             errors="ignore",
-            timeout=2,  # Reduced timeout to prevent blocking
+            timeout=2,
             stderr=subprocess.DEVNULL
         )
-
-        signal_match = re.search(r"Signal\s+:\s+(\d+)%", output)
-        rssi_match = re.search(r"Rssi\s+:\s+(-?\d+)", output)
-        rx_match = re.search(r"Receive rate \(Mbps\)\s+:\s+([\d\.]+)", output)
-        tx_match = re.search(r"Transmit rate \(Mbps\)\s+:\s+([\d\.]+)", output)
-        channel_match = re.search(r"Channel\s+:\s+(\d+)", output)
-        ssid_match = re.search(r"SSID\s+:\s+(.+)", output)
-        bssid_match = re.search(r"BSSID\s+:\s+([0-9A-Fa-f:]+)", output)
-        radio_match = re.search(r"Radio type\s+:\s+(.+)", output)
-
-        # Calculate average link speed
-        rx_val = float(rx_match.group(1)) if rx_match else 0
-        tx_val = float(tx_match.group(1)) if tx_match else 0
-        link_speed = (rx_val + tx_val) / 2 if (rx_val > 0 and tx_val > 0) else (rx_val or tx_val)
-
+        
+        # Get interface info using iwconfig
+        iwconfig_output = subprocess.check_output(
+            ["iwconfig", INTERFACE],
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=2,
+            stderr=subprocess.DEVNULL
+        )
+        
+        # Check if connected
+        if "Not connected" in iw_output:
+            return None, None, None, None, None, None, None, None, None
+        
+        # Parse iw output
+        rssi_match = re.search(r"signal:\s+(-?\d+)", iw_output)
+        rx_match = re.search(r"rx bitrate:\s+([\d\.]+)", iw_output)
+        tx_match = re.search(r"tx bitrate:\s+([\d\.]+)", iw_output)
+        ssid_match = re.search(r"SSID:\s+(.+)", iw_output)
+        bssid_match = re.search(r"Connected to\s+([0-9a-fA-F:]{17})", iw_output)
+        
+        # Parse iwconfig output
+        channel_match = re.search(r"Channel:(\d+)", iwconfig_output)
+        signal_match = re.search(r"Signal level=(-?\d+)", iwconfig_output)
+        
+        # Get RSSI from iw (signal field) or iwconfig
+        rssi = None
+        if rssi_match:
+            rssi = int(rssi_match.group(1))
+        elif signal_match:
+            rssi = int(signal_match.group(1))
+        
+        # Calculate signal percentage from RSSI (approximate: -30dBm = 100%, -90dBm = 0%)
+        signal_percent = None
+        if rssi is not None:
+            signal_percent = max(0, min(100, int((rssi + 90) * 100 / 60)))
+        
+        # Get rates
+        rx_rate = float(rx_match.group(1)) if rx_match else None
+        tx_rate = float(tx_match.group(1)) if tx_match else None
+        link_speed = (rx_rate + tx_rate) / 2 if (rx_rate and tx_rate) else (rx_rate or tx_rate)
+        
+        # Get channel
+        channel = int(channel_match.group(1)) if channel_match else None
+        
+        # Get SSID and BSSID
+        ssid = ssid_match.group(1).strip() if ssid_match else None
+        bssid = bssid_match.group(1).strip() if bssid_match else None
+        
+        # Determine radio type from iwconfig
+        radio = None
+        if "802.11ax" in iwconfig_output or "IEEE 802.11ax" in iwconfig_output:
+            radio = "802.11ax"
+        elif "802.11ac" in iwconfig_output or "IEEE 802.11ac" in iwconfig_output:
+            radio = "802.11ac"
+        elif "802.11n" in iwconfig_output or "IEEE 802.11n" in iwconfig_output:
+            radio = "802.11n"
+        elif "802.11g" in iwconfig_output or "IEEE 802.11g" in iwconfig_output:
+            radio = "802.11g"
+        elif "802.11a" in iwconfig_output or "IEEE 802.11a" in iwconfig_output:
+            radio = "802.11a"
+        else:
+            radio = "802.11"
+        
         return (
-            int(signal_match.group(1)) if signal_match else None,
-            int(rssi_match.group(1)) if rssi_match else None,
-            float(rx_match.group(1)) if rx_match else None,
-            float(tx_match.group(1)) if tx_match else None,
+            signal_percent,
+            rssi,
+            rx_rate,
+            tx_rate,
             link_speed,
-            int(channel_match.group(1)) if channel_match else None,
-            ssid_match.group(1).strip() if ssid_match else None,
-            bssid_match.group(1).strip() if bssid_match else None,
-            radio_match.group(1).strip() if radio_match else None
+            channel,
+            ssid,
+            bssid,
+            radio
         )
     except (subprocess.SubprocessError, subprocess.TimeoutExpired, ValueError, Exception) as e:
         # Silent error handling to prevent console spam
         return None, None, None, None, None, None, None, None, None
 
-def collect_rtt_windows(target: str = PING_TARGET) -> Optional[float]:
+def collect_rtt_linux(target: str = PING_TARGET) -> Optional[float]:
     """
-    Collects Round-Trip Time (RTT) latency using Windows ping command.
+    Collects Round-Trip Time (RTT) latency using Linux ping command.
     
     Args:
         target: Ping target IP address or hostname
@@ -108,8 +160,8 @@ def collect_rtt_windows(target: str = PING_TARGET) -> Optional[float]:
         RTT in milliseconds, or None if ping fails
     """
     try:
-        # Windows ping command: ping -n 1 -w 1000 target
-        cmd = ["ping", "-n", "1", "-w", "500", target]  # Reduced wait time
+        # Linux ping command: ping -c 1 -W 1 target
+        cmd = ["ping", "-c", "1", "-W", "1", target]
         output = subprocess.check_output(
             cmd,
             text=True,
@@ -119,12 +171,11 @@ def collect_rtt_windows(target: str = PING_TARGET) -> Optional[float]:
             stderr=subprocess.DEVNULL
         )
         
-        # Windows ping output pattern: "time=XXms" or "time<1ms" or "time=XXms TTL=XX"
-        # Try multiple patterns
+        # Linux ping output pattern: "time=XX.XXX ms" or "time=XXms"
         patterns = [
-            r"time[<=](\d+)ms",  # time=XXms or time<1ms
-            r"time=([\d\.]+)ms",  # time=XX.XXms
-            r"(\d+)ms",  # Just XXms (fallback)
+            r"time=([\d\.]+)\s*ms",  # time=XX.XXX ms
+            r"time=([\d\.]+)ms",  # time=XX.XXXms
+            r"min/avg/max[^=]*=\s*[\d\.]+/[\d\.]+/([\d\.]+)",  # min/avg/max format
         ]
         
         for pattern in patterns:
@@ -135,6 +186,39 @@ def collect_rtt_windows(target: str = PING_TARGET) -> Optional[float]:
                 except (ValueError, IndexError):
                     continue
             
+        return None
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, ValueError, AttributeError, FileNotFoundError):
+        return None
+
+def collect_mac_retransmissions_linux() -> Optional[float]:
+    """
+    Collects MAC-layer retransmission statistics from Linux using iw station dump.
+    
+    Returns:
+        Retry rate as a percentage, or None if not available
+    """
+    try:
+        output = subprocess.check_output(
+            ["iw", "dev", INTERFACE, "station", "dump"],
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=2,
+            stderr=subprocess.DEVNULL
+        )
+        
+        # Parse retry statistics
+        tx_retries_match = re.search(r"tx retries:\s+(\d+)", output)
+        tx_failed_match = re.search(r"tx failed:\s+(\d+)", output)
+        
+        if tx_retries_match and tx_failed_match:
+            tx_retries = int(tx_retries_match.group(1))
+            tx_failed = int(tx_failed_match.group(1))
+            total = tx_retries + tx_failed
+            if total > 0:
+                retry_rate = (tx_retries / total) * 100
+                return retry_rate
+        
         return None
     except (subprocess.SubprocessError, subprocess.TimeoutExpired, ValueError, AttributeError, FileNotFoundError):
         return None
@@ -322,8 +406,8 @@ def data_collection_worker():
     while True:
         try:
             timestamp = time.time()
-            signal, rssi, rx_rate, tx_rate, link_speed, channel, ssid, bssid, radio = collect_wifi_metrics_windows()
-            rtt_ms = collect_rtt_windows()
+            signal, rssi, rx_rate, tx_rate, link_speed, channel, ssid, bssid, radio = collect_wifi_metrics_linux()
+            rtt_ms = collect_rtt_linux()
             
             # Calculate bandwidth utilization based on theoretical max for WiFi
             # Estimate max bandwidth based on radio type for better utilization calculation
@@ -1068,7 +1152,20 @@ def update_dashboard_components(n: int):
         link_state_explanation = generate_link_state_explanation(df, latest_metrics)
         cross_layer_insight = generate_cross_layer_insight(df, latest_metrics)
         
-        # MAC Retransmission Indicator (placeholder for Windows - not available)
+        # MAC Retransmission Indicator (Linux - available via iw station dump)
+        mac_retry_rate = collect_mac_retransmissions_linux()
+        if mac_retry_rate is not None:
+            if mac_retry_rate < 5:
+                retry_status = "LOW"
+            elif mac_retry_rate < 15:
+                retry_status = "MEDIUM"
+            else:
+                retry_status = "HIGH"
+            retry_display = f"{mac_retry_rate:.1f}%"
+        else:
+            retry_status = "N/A"
+            retry_display = "N/A"
+        
         mac_retransmission = html.Div([
             html.Div("MAC Retransmissions", style={
                 "fontSize": "10px",
@@ -1080,14 +1177,23 @@ def update_dashboard_components(n: int):
                 "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif",
                 "textAlign": "center"
             }),
-            html.Div("N/A", style={
-                "fontSize": "40px",
-                "fontWeight": "800",
-                "color": THEME_COLORS["text_tertiary"],
-                "letterSpacing": "-1.5px",
+            html.Div(retry_display, style={
+                "fontSize": "38px",
+                "fontWeight": "600",
+                "color": THEME_COLORS["text_primary"],
+                "letterSpacing": "-0.8px",
                 "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif",
                 "textAlign": "center",
-                "lineHeight": "1.2"
+                "lineHeight": "1.3",
+                "marginBottom": "8px"
+            }),
+            html.Div(retry_status, style={
+                "fontSize": "12px",
+                "fontWeight": "500",
+                "color": THEME_COLORS["text_secondary"],
+                "letterSpacing": "0.5px",
+                "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif",
+                "textAlign": "center"
             })
         ])
     except Exception as e:
