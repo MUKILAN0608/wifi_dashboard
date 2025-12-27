@@ -656,7 +656,84 @@ app.layout = html.Div(style={
             })
         ]),
 
-        # Charts Section - 2x3 Grid (6 Professional Charts)
+        # Research Insights Section
+        html.Div(style={
+            "display": "grid",
+            "gridTemplateColumns": "repeat(2, 1fr)",
+            "gap": "32px",
+            "marginBottom": "40px"
+        }, children=[
+            # Link State Explanation Panel
+            html.Div(style={
+                "background": f"linear-gradient(135deg, {THEME_COLORS['surface']} 0%, {THEME_COLORS['card']} 100%)",
+                "padding": "32px",
+                "borderRadius": "16px",
+                "border": f"1px solid {THEME_COLORS['border']}",
+                "boxShadow": f"0 10px 40px rgba(0, 0, 0, 0.45), 0 5px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
+                "backdropFilter": "blur(24px)"
+            }, children=[
+                html.H4("Link State Analysis", style={
+                    "margin": "0 0 20px 0",
+                    "fontSize": "18px",
+                    "color": THEME_COLORS["text_primary"],
+                    "fontWeight": "700",
+                    "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
+                }),
+                html.Div(id="link-state-panel", style={
+                    "color": THEME_COLORS["text_secondary"],
+                    "fontSize": "14px",
+                    "lineHeight": "1.8",
+                    "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
+                })
+            ]),
+            # Cross-Layer Insight Box
+            html.Div(style={
+                "background": f"linear-gradient(135deg, {THEME_COLORS['surface']} 0%, {THEME_COLORS['card']} 100%)",
+                "padding": "32px",
+                "borderRadius": "16px",
+                "border": f"1px solid {THEME_COLORS['border']}",
+                "boxShadow": f"0 10px 40px rgba(0, 0, 0, 0.45), 0 5px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
+                "backdropFilter": "blur(24px)"
+            }, children=[
+                html.H4("Cross-Layer Insights", style={
+                    "margin": "0 0 20px 0",
+                    "fontSize": "18px",
+                    "color": THEME_COLORS["text_primary"],
+                    "fontWeight": "700",
+                    "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
+                }),
+                html.Div(id="cross-layer-insight", style={
+                    "color": THEME_COLORS["text_secondary"],
+                    "fontSize": "14px",
+                    "lineHeight": "1.8",
+                    "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
+                })
+            ])
+        ]),
+
+        # Metric Freshness and Sampling Information
+        html.Div(style={
+            "background": f"linear-gradient(135deg, {THEME_COLORS['surface']} 0%, {THEME_COLORS['card']} 100%)",
+            "padding": "24px 32px",
+            "borderRadius": "16px",
+            "marginBottom": "40px",
+            "border": f"1px solid {THEME_COLORS['border']}",
+            "boxShadow": f"0 10px 40px rgba(0, 0, 0, 0.45), 0 5px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
+            "backdropFilter": "blur(24px)"
+        }, children=[
+            html.Div(id="sampling-info", style={
+                "display": "flex",
+                "justifyContent": "space-between",
+                "alignItems": "center",
+                "flexWrap": "wrap",
+                "gap": "16px",
+                "color": THEME_COLORS["text_secondary"],
+                "fontSize": "13px",
+                "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
+            })
+        ]),
+
+        # Charts Section - Refined Research-Oriented Charts
         html.Div(className="chart-grid-3", style={
             "display": "grid",
             "gridTemplateColumns": "repeat(3, 1fr)",
@@ -669,14 +746,6 @@ app.layout = html.Div(style={
                 title="Signal Strength vs Time: Displays RSSI (dBm) and Signal percentage over time. Shows signal quality trends, mobility effects, and interference patterns.",
                 children=[
                     dcc.Graph(id="chart1-signal-strength", config={"displayModeBar": False, "responsive": True})
-                ]
-            ),
-            html.Div(
-                className="card-hover-effect",
-                style={**GRAPH_STYLE, "cursor": "help"},
-                title="RTT Distribution: Histogram showing latency spread. Helps identify tail latency, jitter, and network performance consistency.",
-                children=[
-                    dcc.Graph(id="chart2-rtt-distribution", config={"displayModeBar": False, "responsive": True})
                 ]
             ),
             html.Div(
@@ -713,31 +782,6 @@ app.layout = html.Div(style={
             )
         ]),
 
-        # Additional Charts Section - 1x2 Format (2 New Charts)
-        html.Div(className="chart-grid-2", style={
-            "display": "grid",
-            "gridTemplateColumns": "repeat(2, 1fr)",
-            "gap": "32px",
-            "marginBottom": "48px"
-        }, children=[
-            html.Div(
-                className="card-hover-effect",
-                style={**GRAPH_STYLE, "cursor": "help"},
-                title="Bandwidth Utilization: Shows percentage of available WiFi bandwidth being used over time. High values may indicate network congestion or heavy usage.",
-                children=[
-                    dcc.Graph(id="chart7-bandwidth-utilization", config={"displayModeBar": False, "responsive": True})
-                ]
-            ),
-            html.Div(
-                className="card-hover-effect",
-                style={**GRAPH_STYLE, "cursor": "help"},
-                title="Link Speed Trend: Displays the average link speed (Mbps) over time. Visualizes connection quality changes and helps identify speed degradation patterns.",
-                children=[
-                    dcc.Graph(id="chart8-link-speed-trend", config={"displayModeBar": False, "responsive": True})
-                ]
-            )
-        ]),
-
     ])
 ])
 
@@ -747,14 +791,14 @@ app.layout = html.Div(style={
     Output("connection-info", "children"),
     Output("kpi-container", "children"),
     Output("metrics-container", "children"),
+    Output("link-state-panel", "children"),
+    Output("cross-layer-insight", "children"),
+    Output("sampling-info", "children"),
     Output("chart1-signal-strength", "figure"),
-    Output("chart2-rtt-distribution", "figure"),
     Output("chart3-rx-tx-phy-rate", "figure"),
     Output("chart4-rtt-variability", "figure"),
     Output("chart5-stability-gauge", "figure"),
     Output("chart6-anomaly-timeline", "figure"),
-    Output("chart7-bandwidth-utilization", "figure"),
-    Output("chart8-link-speed-trend", "figure"),
     Input("update-interval", "n_intervals")
 )
 def update_dashboard_components(n: int):
@@ -776,7 +820,7 @@ def update_dashboard_components(n: int):
     except Exception as e:
         # If lock fails, return empty state
         empty_layout = create_empty_figure_layout()
-        return [], [], [], empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
+        return [], [], [], "Collecting data...", "Collecting data...", "Initializing...", empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
     
     # Enterprise connection info badges - Premium Design
     conn_badges = [
@@ -864,13 +908,15 @@ def update_dashboard_components(n: int):
     
     if df.empty:
         empty_layout = create_empty_figure_layout()
-        return conn_badges, [], [], empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
+        sampling_text = f"Sampling: {SAMPLE_INTERVAL_SECONDS}s interval • Data Sources: Linux iw, iwconfig, ping • Interface: {INTERFACE}"
+        return conn_badges, [], [], html.Div("Collecting data..."), html.Div("Collecting data..."), sampling_text, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
 
     try:
         latest_metrics = df.iloc[-1]
     except (IndexError, KeyError):
         empty_layout = create_empty_figure_layout()
-        return conn_badges, [], [], empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
+        sampling_text = f"Sampling: {SAMPLE_INTERVAL_SECONDS}s interval • Data Sources: Linux iw, iwconfig, ping • Interface: {INTERFACE}"
+        return conn_badges, [], [], html.Div("No data available"), html.Div("No data available"), sampling_text, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
     
     # Generate KPI cards with error handling
     try:
@@ -884,22 +930,28 @@ def update_dashboard_components(n: int):
     except Exception:
         metric_cards = []
     
-    # Generate all 8 professional charts - with error handling
+    # Generate research insights
+    link_state_text = generate_link_state_explanation(df, latest_metrics)
+    cross_layer_text = generate_cross_layer_insight(df, latest_metrics)
+    
+    # Generate sampling information
+    total_samples = len(df)
+    time_span = (df["timestamp"].iloc[-1] - df["timestamp"].iloc[0]) if len(df) > 1 else 0
+    sampling_text = f"Sampling: {SAMPLE_INTERVAL_SECONDS}s interval • Data Sources: Linux iw, iwconfig, ping • Interface: {INTERFACE} • Samples: {total_samples} • Duration: {time_span:.1f}s"
+    
+    # Generate refined charts - with error handling
     try:
         chart1 = create_chart1_signal_strength(df)
-        chart2 = create_chart2_rtt_distribution(df)
         chart3 = create_chart3_rx_tx_phy_rate(df)
         chart4 = create_chart4_rtt_variability(df)
         chart5 = create_chart5_stability_gauge(df)
         chart6 = create_chart6_anomaly_timeline(df)
-        chart7 = create_chart7_bandwidth_utilization(df)
-        chart8 = create_chart8_link_speed_trend(df)
     except Exception as chart_error:
         # If chart generation fails, return empty layouts
         empty_layout = create_empty_figure_layout()
-        chart1 = chart2 = chart3 = chart4 = chart5 = chart6 = chart7 = chart8 = empty_layout
+        chart1 = chart3 = chart4 = chart5 = chart6 = empty_layout
     
-    return conn_badges, kpi_cards, metric_cards, chart1, chart2, chart3, chart4, chart5, chart6, chart7, chart8
+    return conn_badges, kpi_cards, metric_cards, link_state_text, cross_layer_text, sampling_text, chart1, chart3, chart4, chart5, chart6
 
 # ================= CHART GENERATORS =================
 
@@ -1007,22 +1059,10 @@ def create_metric_cards(latest: pd.Series) -> list:
             "tooltip": "Transmit Rate: Physical data rate for sending data to the access point, measured in Megabits per second (Mbps)."
         },
         {
-            "label": "Link Speed",
-            "value": f"{latest['link_speed_mbps']:.1f} Mbps" if pd.notna(latest['link_speed_mbps']) else "N/A",
-            "color": THEME_COLORS["success"],
-            "tooltip": "Link Speed: Average of RX and TX rates, representing the overall connection speed between your device and the access point."
-        },
-        {
             "label": "Channel",
             "value": f"{int(latest['channel'])}" if pd.notna(latest['channel']) else "N/A",
             "color": THEME_COLORS["primary"],
             "tooltip": "WiFi Channel: The radio frequency channel number your WiFi connection is using. Different channels help avoid interference."
-        },
-        {
-            "label": "BW Util",
-            "value": f"{latest['bandwidth_util']:.1f}%" if pd.notna(latest['bandwidth_util']) else "N/A",
-            "color": THEME_COLORS["warning"] if (pd.notna(latest['bandwidth_util']) and latest['bandwidth_util'] > 50) else THEME_COLORS["success"],
-            "tooltip": "Bandwidth Utilization: Percentage of available WiFi bandwidth currently being used. Higher values may indicate network congestion."
         }
     ]
     
@@ -1051,6 +1091,120 @@ def create_metric_cards(latest: pd.Series) -> list:
             ]
         ) for metric in metrics
     ]
+
+def generate_link_state_explanation(df: pd.DataFrame, latest: pd.Series) -> str:
+    """
+    Generates rule-based link state explanation.
+    
+    Args:
+        df: DataFrame with metric history
+        latest: Latest metric values
+        
+    Returns:
+        Text explanation of current link state
+    """
+    if df.empty or len(df) < 10:
+        return "Insufficient data for state analysis. Collecting samples..."
+    
+    # Analyze recent window (last 20 samples)
+    recent = df.tail(20)
+    
+    # Signal analysis
+    signal_vals = recent['signal_percent'].dropna()
+    signal_mean = signal_vals.mean() if len(signal_vals) > 0 else None
+    signal_std = signal_vals.std() if len(signal_vals) > 0 else None
+    signal_trend = "stable" if signal_std and signal_std < 5 else "variable" if signal_std and signal_std < 15 else "unstable"
+    
+    # RTT analysis
+    rtt_vals = recent['rtt_ms'].dropna()
+    rtt_mean = rtt_vals.mean() if len(rtt_vals) > 0 else None
+    rtt_std = rtt_vals.std() if len(rtt_vals) > 0 else None
+    rtt_trend = "stable" if rtt_std and rtt_std < 5 else "variable" if rtt_std and rtt_std < 15 else "unstable"
+    
+    # PHY rate analysis
+    rx_vals = recent['rx_mbps'].dropna()
+    rx_std = rx_vals.std() if len(rx_vals) > 0 else None
+    phy_trend = "stable" if rx_std and rx_std < 10 else "variable" if rx_std and rx_std < 50 else "unstable"
+    
+    # Determine overall state with proper None handling
+    signal_str = f"{signal_mean:.0f}%" if signal_mean is not None else "N/A"
+    rtt_str = f"{rtt_mean:.1f}ms" if rtt_mean is not None else "N/A"
+    
+    if signal_mean is not None and signal_mean >= 70 and signal_trend == "stable" and rtt_mean is not None and rtt_mean < 50 and rtt_trend == "stable":
+        state = "STABLE"
+        state_color = THEME_COLORS["success"]
+        explanation = f"Link is stable. Signal: {signal_str} ({signal_trend}), RTT: {rtt_str} ({rtt_trend}), PHY rates stable."
+    elif signal_mean is not None and signal_mean >= 50 and (signal_trend in ["stable", "variable"] or rtt_trend in ["stable", "variable"]):
+        state = "DEGRADING"
+        state_color = THEME_COLORS["warning"]
+        explanation = f"Link shows degradation signs. Signal: {signal_str} ({signal_trend}), RTT: {rtt_str} ({rtt_trend}), PHY rates {phy_trend}."
+    else:
+        state = "UNSTABLE"
+        state_color = THEME_COLORS["error"]
+        explanation = f"Link is unstable. Signal: {signal_str} ({signal_trend}) if available, RTT: {rtt_str} ({rtt_trend}) if available, high variability detected."
+    
+    return [
+        html.Strong(f"State: {state}", style={"color": state_color}),
+        html.Br(),
+        explanation
+    ]
+
+def generate_cross_layer_insight(df: pd.DataFrame, latest: pd.Series):
+    """
+    Generates cross-layer insight highlighting PHY-network layer relationships.
+    
+    Args:
+        df: DataFrame with metric history
+        latest: Latest metric values
+        
+    Returns:
+        HTML elements or text insight about cross-layer behavior
+    """
+    if df.empty or len(df) < 10:
+        return html.Div("Insufficient data for cross-layer analysis. Collecting samples...")
+    
+    recent = df.tail(20)
+    
+    # PHY layer stability
+    rx_vals = recent['rx_mbps'].dropna()
+    tx_vals = recent['tx_mbps'].dropna()
+    phy_stable = False
+    if len(rx_vals) > 0 and len(tx_vals) > 0:
+        rx_std = rx_vals.std()
+        tx_std = tx_vals.std()
+        phy_stable = (rx_std < 20 and tx_std < 20)
+    
+    # Network layer (RTT) behavior
+    rtt_vals = recent['rtt_ms'].dropna()
+    rtt_mean = rtt_vals.mean() if len(rtt_vals) > 0 else None
+    rtt_std = rtt_vals.std() if len(rtt_vals) > 0 else None
+    rtt_high = rtt_mean and rtt_mean > 50
+    rtt_variable = rtt_std and rtt_std > 10
+    
+    # Generate insight with proper None handling
+    rtt_mean_str = f"{rtt_mean:.1f}ms" if rtt_mean is not None else "N/A"
+    rtt_std_str = f"{rtt_std:.1f}ms" if rtt_std is not None else "N/A"
+    
+    if phy_stable and rtt_high:
+        return [
+            html.Strong("PHY-Network Mismatch: "),
+            f"PHY rates are stable (RX/TX variance < 20 Mbps), but RTT is elevated ({rtt_mean_str}). This suggests network-layer congestion or upstream issues, not PHY-layer problems."
+        ]
+    elif phy_stable and rtt_variable:
+        return [
+            html.Strong("PHY-Network Mismatch: "),
+            f"PHY rates are stable, but RTT shows high variability (std: {rtt_std_str}). This indicates network-layer jitter independent of PHY stability."
+        ]
+    elif not phy_stable and rtt_high:
+        return [
+            html.Strong("Cross-Layer Correlation: "),
+            f"Both PHY rates and RTT ({rtt_mean_str}) show degradation. This suggests PHY-layer issues (signal quality, interference) are affecting network performance."
+        ]
+    else:
+        return [
+            html.Strong("Normal Operation: "),
+            f"PHY and network layers are consistent. RTT: {rtt_mean_str} if available, PHY rates within expected variance."
+        ]
 
 def create_kpi_cards(df: pd.DataFrame) -> list:
     """
@@ -1100,20 +1254,6 @@ def create_kpi_cards(df: pd.DataFrame) -> list:
             "status": "Signal Power",
             "color": THEME_COLORS["primary"],
             "tooltip": "Average RSSI: Mean received signal strength indicator in decibels. Shows overall signal power level over time."
-        },
-        {
-            "label": "Peak Speed",
-            "value": f"{max_throughput:.0f} Mbps",
-            "status": "Current Peak",
-            "color": THEME_COLORS["success"],
-            "tooltip": "Peak Speed: Maximum throughput achieved (highest of RX or TX rates) during the monitoring session."
-        },
-        {
-            "label": "Avg Link Speed",
-            "value": f"{avg_link_speed:.0f} Mbps",
-            "status": "Average Speed",
-            "color": THEME_COLORS["warning"],
-            "tooltip": "Average Link Speed: Mean connection speed over time, calculated as the average of RX and TX rates."
         }
     ]
     
@@ -1157,6 +1297,68 @@ def create_kpi_cards(df: pd.DataFrame) -> list:
         ) for kpi in kpis
     ]
 
+# ================= EVENT DETECTION =================
+
+def detect_events(df: pd.DataFrame) -> List[Dict]:
+    """
+    Detects significant events for annotation on charts.
+    
+    Args:
+        df: DataFrame with metrics
+        
+    Returns:
+        List of event dictionaries with timestamp, type, and description
+    """
+    events = []
+    if df.empty or len(df) < 5:
+        return events
+    
+    timestamps = [datetime.fromtimestamp(ts) for ts in df["timestamp"]]
+    
+    # Detect signal drops (>20% drop)
+    signal_vals = df["signal_percent"].dropna()
+    if len(signal_vals) > 5:
+        for i in range(5, len(df)):
+            if pd.notna(df["signal_percent"].iloc[i]) and pd.notna(df["signal_percent"].iloc[i-5]):
+                prev_avg = signal_vals.iloc[max(0, i-5):i].mean()
+                current = df["signal_percent"].iloc[i]
+                if prev_avg > 0 and current < prev_avg - 20:
+                    events.append({
+                        "timestamp": timestamps[i],
+                        "type": "signal_drop",
+                        "description": f"Signal drop: {prev_avg:.0f}% → {current:.0f}%"
+                    })
+    
+    # Detect RTT spikes (>100ms or >2x average)
+    rtt_vals = df["rtt_ms"].dropna()
+    if len(rtt_vals) > 5:
+        rtt_mean = rtt_vals.mean()
+        for i in range(len(df)):
+            if pd.notna(df["rtt_ms"].iloc[i]):
+                rtt = df["rtt_ms"].iloc[i]
+                if rtt > 100 or (rtt_mean > 0 and rtt > rtt_mean * 2):
+                    events.append({
+                        "timestamp": timestamps[i],
+                        "type": "rtt_spike",
+                        "description": f"RTT spike: {rtt:.1f}ms"
+                    })
+    
+    # Detect PHY rate fallback (>50% drop)
+    rx_vals = df["rx_mbps"].dropna()
+    if len(rx_vals) > 5:
+        for i in range(5, len(df)):
+            if pd.notna(df["rx_mbps"].iloc[i]) and pd.notna(df["rx_mbps"].iloc[i-5]):
+                prev_avg = rx_vals.iloc[max(0, i-5):i].mean()
+                current = df["rx_mbps"].iloc[i]
+                if prev_avg > 0 and current < prev_avg * 0.5:
+                    events.append({
+                        "timestamp": timestamps[i],
+                        "type": "phy_fallback",
+                        "description": f"PHY fallback: {prev_avg:.1f} → {current:.1f} Mbps"
+                    })
+    
+    return events
+
 # ================= CHART 1: SIGNAL STRENGTH VS TIME =================
 
 def create_chart1_signal_strength(df: pd.DataFrame) -> dict:
@@ -1168,6 +1370,33 @@ def create_chart1_signal_strength(df: pd.DataFrame) -> dict:
         return create_empty_figure_layout()
     
     timestamps = [datetime.fromtimestamp(ts) for ts in df["timestamp"]]
+    
+    # Detect events for annotation
+    events = detect_events(df)
+    signal_events = [e for e in events if e["type"] == "signal_drop"]
+    
+    # Create annotations for signal drop events
+    annotations = []
+    for event in signal_events:
+        # Find closest timestamp index
+        event_ts = event["timestamp"].timestamp()
+        closest_idx = min(range(len(df)), key=lambda i: abs(df["timestamp"].iloc[i] - event_ts))
+        if closest_idx < len(df) and pd.notna(df["signal_percent"].iloc[closest_idx]):
+            signal_val = df["signal_percent"].iloc[closest_idx]
+            annotations.append({
+                "x": event["timestamp"],
+                "y": signal_val,
+                "text": "⚠ Signal Drop",
+                "showarrow": True,
+                "arrowhead": 2,
+                "arrowcolor": THEME_COLORS["error"],
+                "arrowsize": 1.5,
+                "ax": 0,
+                "ay": -30,
+                "bgcolor": THEME_COLORS["error"],
+                "bordercolor": THEME_COLORS["error"],
+                "font": {"color": "white", "size": 10}
+            })
     
     return {
         "data": [
@@ -1204,7 +1433,8 @@ def create_chart1_signal_strength(df: pd.DataFrame) -> dict:
                 "side": "right",
                 "range": [0, 100],
                 "color": THEME_COLORS["success"]
-            }
+            },
+            "annotations": annotations
         }
     }
 
@@ -1281,6 +1511,33 @@ def create_chart3_rx_tx_phy_rate(df: pd.DataFrame) -> dict:
     rx_axis_range = [max(0, rx_min - rx_padding), rx_max + rx_padding]
     tx_axis_range = [max(0, tx_min - tx_padding), tx_max + tx_padding]
     
+    # Detect events for annotation
+    events = detect_events(df)
+    phy_events = [e for e in events if e["type"] == "phy_fallback"]
+    
+    # Create annotations for PHY fallback events
+    annotations = []
+    for event in phy_events:
+        # Find closest timestamp index
+        event_ts = event["timestamp"].timestamp()
+        closest_idx = min(range(len(df)), key=lambda i: abs(df["timestamp"].iloc[i] - event_ts))
+        if closest_idx < len(df) and pd.notna(df["rx_mbps"].iloc[closest_idx]):
+            rx_val = df["rx_mbps"].iloc[closest_idx]
+            annotations.append({
+                "x": event["timestamp"],
+                "y": rx_val,
+                "text": "⚠ PHY Fallback",
+                "showarrow": True,
+                "arrowhead": 2,
+                "arrowcolor": THEME_COLORS["warning"],
+                "arrowsize": 1.5,
+                "ax": 0,
+                "ay": -30,
+                "bgcolor": THEME_COLORS["warning"],
+                "bordercolor": THEME_COLORS["warning"],
+                "font": {"color": "white", "size": 10}
+            })
+    
     return {
         "data": [
             go.Scatter(
@@ -1322,7 +1579,8 @@ def create_chart3_rx_tx_phy_rate(df: pd.DataFrame) -> dict:
                 "color": THEME_COLORS["warning"],
                 "range": tx_axis_range,
                 "showgrid": False  # Disable grid for right axis to reduce visual clutter
-            }
+            },
+            "annotations": annotations
         }
     }
 
@@ -1378,6 +1636,34 @@ def create_chart4_rtt_variability(df: pd.DataFrame) -> dict:
             mean_rtt = 0.0
     else:
         mean_rtt = 0.0
+    
+    # Detect events for annotation
+    events = detect_events(df)
+    rtt_events = [e for e in events if e["type"] == "rtt_spike"]
+    
+    # Create annotations for RTT spike events
+    annotations = []
+    for event in rtt_events:
+        # Find closest timestamp index in valid_timestamps
+        event_ts = event["timestamp"]
+        closest_idx = min(range(len(valid_timestamps)), key=lambda i: abs((valid_timestamps[i] - event_ts).total_seconds())) if len(valid_timestamps) > 0 else None
+        if closest_idx is not None and closest_idx < len(rtt_list):
+            rtt_val = rtt_list[closest_idx]
+            if abs((valid_timestamps[closest_idx] - event_ts).total_seconds()) < SAMPLE_INTERVAL_SECONDS * 2:
+                annotations.append({
+                    "x": event["timestamp"],
+                    "y": rtt_val,
+                    "text": "⚠ RTT Spike",
+                    "showarrow": True,
+                    "arrowhead": 2,
+                    "arrowcolor": THEME_COLORS["error"],
+                    "arrowsize": 1.5,
+                    "ax": 0,
+                    "ay": -30,
+                    "bgcolor": THEME_COLORS["error"],
+                    "bordercolor": THEME_COLORS["error"],
+                    "font": {"color": "white", "size": 10}
+                })
     
     return {
         "data": [
@@ -1441,7 +1727,8 @@ def create_chart4_rtt_variability(df: pd.DataFrame) -> dict:
             "xaxis": {
                 **create_base_layout("")["xaxis"],
                 "title": "Time"
-            }
+            },
+            "annotations": annotations
         }
     }
 
