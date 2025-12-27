@@ -38,6 +38,9 @@ metrics_dataframe = pd.DataFrame({
     "channel": pd.Series(dtype="Int64"),
     "bandwidth_util": pd.Series(dtype="float64"),
     "rtt_ms": pd.Series(dtype="float64"),
+    "rtt_jitter": pd.Series(dtype="float64"),
+    "rssi_delta": pd.Series(dtype="float64"),
+    "tx_retries": pd.Series(dtype="Int64"),
     "stability_score": pd.Series(dtype="float64"),
     "anomaly_flag": pd.Series(dtype="Int64")
 })
@@ -175,43 +178,143 @@ def collect_wifi_metrics_linux() -> Tuple[Optional[int], Optional[int], Optional
         # Silent error handling to prevent console spam
         return None, None, None, None, None, None, None, None, None
 
-def collect_rtt_linux(target: str = PING_TARGET) -> Optional[float]:
+def collect_rtt_linux(target: str = PING_TARGET) -> Tuple[Optional[float], Optional[float]]:
     """
-    Collects Round-Trip Time (RTT) latency using Linux ping command.
+    Collects Round-Trip Time (RTT) latency and jitter (mdev) using Linux ping command.
+    Uses multiple pings to get statistics including mdev.
     
     Args:
         target: Ping target IP address or hostname
         
     Returns:
-        RTT in milliseconds, or None if ping fails
+        Tuple of (RTT in milliseconds, jitter/mdev in milliseconds), or (None, None) if ping fails
     """
     try:
-        # Linux ping command: ping -c 1 -W 1 target
-        cmd = ["ping", "-c", "1", "-W", "1", target]
+        # Linux ping command with statistics: ping -c 3 -W 1 target (3 pings for stats)
+        cmd = ["ping", "-c", "3", "-W", "1", target]
         output = subprocess.check_output(
             cmd,
             text=True,
             encoding="utf-8",
             errors="ignore",
-            timeout=1.5,
+            timeout=2.5,
             stderr=subprocess.DEVNULL
         )
         
-        # Linux ping output pattern: "time=XX.XXX ms" or "time=XXms"
-        patterns = [
+        # Extract RTT - look for individual ping times first
+        rtt_patterns = [
             r"time=([\d\.]+)\s*ms",  # time=XX.XXX ms
             r"time<(\d+)\s*ms",  # time<1ms
-            r"(\d+\.?\d*)\s*ms",  # Just XX.XXX ms (fallback)
         ]
         
-        for pattern in patterns:
-            rtt_match = re.search(pattern, output, re.IGNORECASE)
-            if rtt_match:
+        rtt_values = []
+        for pattern in rtt_patterns:
+            matches = re.findall(pattern, output, re.IGNORECASE)
+            if matches:
                 try:
-                    return float(rtt_match.group(1))
+                    rtt_values = [float(m) for m in matches]
+                    break
                 except (ValueError, IndexError):
                     continue
-            
+        
+        # Calculate mean RTT if we have values
+        rtt_mean = sum(rtt_values) / len(rtt_values) if rtt_values else None
+        
+        # Extract mdev (jitter) from statistics line
+        # Pattern: "rtt min/avg/max/mdev = X.XXX/X.XXX/X.XXX/X.XXX ms"
+        mdev_match = re.search(r"rtt\s+min/avg/max/mdev\s*=\s*[\d\.]+/[\d\.]+/[\d\.]+/([\d\.]+)\s*ms", output, re.IGNORECASE)
+        if mdev_match:
+            try:
+                jitter = float(mdev_match.group(1))
+            except (ValueError, IndexError):
+                jitter = None
+        else:
+            # Calculate jitter from RTT values if mdev not available
+            if len(rtt_values) > 1:
+                jitter = np.std(rtt_values) if rtt_values else None
+            else:
+                jitter = None
+        
+        # Fallback: if we only got one ping, use it
+        if rtt_mean is None:
+            single_pattern = r"(\d+\.?\d*)\s*ms"
+            single_match = re.search(single_pattern, output, re.IGNORECASE)
+            if single_match:
+                try:
+                    rtt_mean = float(single_match.group(1))
+                except (ValueError, IndexError):
+                    pass
+        
+        return (rtt_mean, jitter)
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, ValueError, AttributeError, FileNotFoundError):
+        # Fallback to single ping if multi-ping fails
+        try:
+            cmd = ["ping", "-c", "1", "-W", "1", target]
+            output = subprocess.check_output(
+                cmd,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=1.5,
+                stderr=subprocess.DEVNULL
+            )
+            rtt_patterns = [
+                r"time=([\d\.]+)\s*ms",
+                r"time<(\d+)\s*ms",
+                r"(\d+\.?\d*)\s*ms",
+            ]
+            for pattern in rtt_patterns:
+                rtt_match = re.search(pattern, output, re.IGNORECASE)
+                if rtt_match:
+                    try:
+                        return (float(rtt_match.group(1)), None)
+                    except (ValueError, IndexError):
+                        continue
+        except:
+            pass
+        return (None, None)
+
+def collect_retry_stats_linux() -> Optional[int]:
+    """
+    Collects packet retransmission/retry statistics from Linux iw station dump.
+    
+    Returns:
+        Number of TX retries, or None if unavailable
+    """
+    try:
+        # Get station statistics using 'iw dev <interface> station dump'
+        station_output = subprocess.check_output(
+            ["iw", "dev", INTERFACE, "station", "dump"],
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=2,
+            stderr=subprocess.DEVNULL
+        )
+        
+        # Parse TX retries - look for "tx retries" or "retries" field
+        retry_patterns = [
+            r"tx\s+retries:\s*(\d+)",
+            r"retries:\s*(\d+)",
+            r"tx\s+retry\s+count:\s*(\d+)",
+        ]
+        
+        for pattern in retry_patterns:
+            retry_match = re.search(pattern, station_output, re.IGNORECASE)
+            if retry_match:
+                try:
+                    return int(retry_match.group(1))
+                except (ValueError, IndexError):
+                    continue
+        
+        # Alternative: look for "tx failed" or "failed" which might indicate retries
+        failed_match = re.search(r"tx\s+failed:\s*(\d+)", station_output, re.IGNORECASE)
+        if failed_match:
+            try:
+                return int(failed_match.group(1))
+            except (ValueError, IndexError):
+                pass
+        
         return None
     except (subprocess.SubprocessError, subprocess.TimeoutExpired, ValueError, AttributeError, FileNotFoundError):
         return None
@@ -323,7 +426,8 @@ def data_collection_worker():
         try:
             timestamp = time.time()
             signal, rssi, rx_rate, tx_rate, link_speed, channel, ssid, bssid, radio = collect_wifi_metrics_linux()
-            rtt_ms = collect_rtt_linux()
+            rtt_ms, rtt_jitter = collect_rtt_linux()
+            tx_retries = collect_retry_stats_linux()
             
             # Calculate bandwidth utilization based on theoretical max for WiFi
             # Estimate max bandwidth based on radio type for better utilization calculation
@@ -349,6 +453,9 @@ def data_collection_worker():
                 "channel": channel,
                 "bandwidth_util": bw_util,
                 "rtt_ms": rtt_ms,
+                "rtt_jitter": rtt_jitter,
+                "rssi_delta": None,  # Will be calculated after adding to dataframe
+                "tx_retries": tx_retries,
                 "stability_score": 50.0,  # Will be calculated after adding to dataframe
                 "anomaly_flag": 0  # Will be calculated after adding to dataframe
             }
@@ -393,12 +500,28 @@ def data_collection_worker():
                         stability = calculate_stability_score(df_copy)
                         anomaly = detect_anomaly(df_copy, current_idx)
                         
+                        # Calculate RSSI delta (difference from rolling average)
+                        rssi_delta = None
+                        if pd.notna(df_copy['rssi_dbm'].iloc[current_idx]):
+                            # Use rolling window of 10 samples for average
+                            window_size = min(10, current_idx + 1)
+                            if window_size > 1:
+                                recent_rssi = df_copy['rssi_dbm'].iloc[max(0, current_idx - window_size + 1):current_idx + 1]
+                                recent_rssi_clean = recent_rssi.dropna()
+                                if len(recent_rssi_clean) > 1:
+                                    rssi_mean = recent_rssi_clean.iloc[:-1].mean()  # Mean of previous values
+                                    current_rssi = df_copy['rssi_dbm'].iloc[current_idx]
+                                    if pd.notna(rssi_mean) and pd.notna(current_rssi):
+                                        rssi_delta = current_rssi - rssi_mean
+                        
                         # Update with lock - verify index is still valid
                         with data_lock:
                             # Re-check length in case DataFrame was trimmed
                             if current_idx < len(metrics_dataframe):
                                 metrics_dataframe.at[current_idx, 'stability_score'] = stability
                                 metrics_dataframe.at[current_idx, 'anomaly_flag'] = anomaly
+                                if rssi_delta is not None:
+                                    metrics_dataframe.at[current_idx, 'rssi_delta'] = rssi_delta
                 except (IndexError, KeyError, ValueError) as calc_error:
                     # Log error for debugging but don't block
                     print(f"Warning: Calculation error (non-critical): {calc_error}")
@@ -454,28 +577,28 @@ THEME_COLORS = {
 
 CARD_STYLE = {
     "background": f"linear-gradient(135deg, {THEME_COLORS['card']} 0%, {THEME_COLORS['card_hover']} 100%)",
-    "padding": "28px",
-    "borderRadius": "16px",
-    "boxShadow": "0 6px 24px rgba(0, 0, 0, 0.35), 0 3px 12px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
+    "padding": "32px",
+    "borderRadius": "20px",
+    "boxShadow": "0 8px 32px rgba(0, 0, 0, 0.4), 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1)",
     "border": f"1px solid {THEME_COLORS['border']}",
     "textAlign": "center",
     "minWidth": "160px",
     "transition": "all 0.4s cubic-bezier(0.4, 0, 0.2, 1)",
     "position": "relative",
     "overflow": "hidden",
-    "backdropFilter": "blur(12px)",
+    "backdropFilter": "blur(16px)",
     "className": "card-hover-effect"
 }
 
 GRAPH_STYLE = {
-    "borderRadius": "16px",
+    "borderRadius": "20px",
     "overflow": "hidden",
     "background": f"linear-gradient(135deg, {THEME_COLORS['surface']} 0%, {THEME_COLORS['card']} 100%)",
     "border": f"1px solid {THEME_COLORS['border']}",
-    "boxShadow": "0 8px 32px rgba(0, 0, 0, 0.4), 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
+    "boxShadow": "0 10px 40px rgba(0, 0, 0, 0.45), 0 5px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.1)",
     "transition": "all 0.4s cubic-bezier(0.4, 0, 0.2, 1)",
-    "padding": "24px",
-    "minHeight": "420px",
+    "padding": "28px",
+    "minHeight": "440px",
     "position": "relative",
     "className": "card-hover-effect"
 }
@@ -504,6 +627,7 @@ app.index_string = '''
                 overflow-x: hidden;
                 margin: 0;
                 padding: 0;
+                background: #0a0e1a;
             }
             @media (max-width: 1400px) {
                 .chart-grid-3 { grid-template-columns: repeat(2, 1fr) !important; }
@@ -513,11 +637,33 @@ app.index_string = '''
                 .chart-grid-2 { grid-template-columns: 1fr !important; }
             }
             .card-hover-effect {
-                transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+                will-change: transform, box-shadow;
             }
             .card-hover-effect:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+                transform: translateY(-4px) scale(1.01);
+                box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), 0 6px 16px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+            }
+            @keyframes fadeIn {
+                from { opacity: 0; transform: translateY(10px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+            .fade-in {
+                animation: fadeIn 0.6s ease-out;
+            }
+            ::-webkit-scrollbar {
+                width: 10px;
+                height: 10px;
+            }
+            ::-webkit-scrollbar-track {
+                background: #0a0e1a;
+            }
+            ::-webkit-scrollbar-thumb {
+                background: #334155;
+                border-radius: 5px;
+            }
+            ::-webkit-scrollbar-thumb:hover {
+                background: #475569;
             }
         </style>
     </head>
@@ -537,35 +683,60 @@ app.layout = html.Div(style={
     "overflowX": "hidden"
 }, children=[
     
-    html.Div(style={"maxWidth": "1800px", "margin": "0 auto", "padding": "40px 36px", "position": "relative"}, children=[
+    html.Div(style={"maxWidth": "1920px", "margin": "0 auto", "padding": "48px 40px", "position": "relative"}, children=[
         
         # Title Section - Professional Header
         html.Div(style={
             "textAlign": "center", 
-            "marginBottom": "56px", 
-            "paddingTop": "40px", 
+            "marginBottom": "64px", 
+            "paddingTop": "48px", 
             "position": "relative",
             "borderBottom": f"2px solid {THEME_COLORS['border']}",
-            "paddingBottom": "32px"
+            "paddingBottom": "40px"
         }, children=[
             html.H1("WiFi Network Performance Monitor", style={
-                "margin": "0 0 12px 0",
-                "fontSize": "48px",
-                "fontWeight": "800",
-                "letterSpacing": "-1.5px",
+                "margin": "0 0 16px 0",
+                "fontSize": "52px",
+                "fontWeight": "900",
+                "letterSpacing": "-2px",
                 "background": f"linear-gradient(135deg, {THEME_COLORS['primary']} 0%, {THEME_COLORS['accent_light']} 100%)",
                 "WebkitBackgroundClip": "text",
                 "WebkitTextFillColor": "transparent",
                 "backgroundClip": "text",
-                "lineHeight": "1.2",
+                "lineHeight": "1.1",
                 "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif",
                 "textShadow": f"0 4px 20px {THEME_COLORS['primary_glow']}"
             }),
             html.P("Real-time Network Analytics & Performance Metrics", style={
                 "margin": "0",
-                "fontSize": "16px",
+                "fontSize": "17px",
                 "color": THEME_COLORS["text_secondary"],
-                "fontWeight": "400",
+                "fontWeight": "500",
+                "letterSpacing": "0.4px",
+                "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
+            })
+        ]),
+        
+        # Metric Freshness and Sampling Information (Moved to top)
+        html.Div(style={
+            "background": f"linear-gradient(135deg, {THEME_COLORS['surface']} 0%, {THEME_COLORS['card']} 100%)",
+            "padding": "24px 36px",
+            "borderRadius": "20px",
+            "marginBottom": "48px",
+            "border": f"1px solid {THEME_COLORS['border']}",
+            "boxShadow": f"0 12px 48px rgba(0, 0, 0, 0.5), 0 6px 24px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1)",
+            "backdropFilter": "blur(24px)",
+            "transition": "all 0.3s ease"
+        }, children=[
+            html.Div(id="sampling-info", style={
+                "display": "flex",
+                "justifyContent": "center",
+                "alignItems": "center",
+                "flexWrap": "wrap",
+                "gap": "32px",
+                "color": THEME_COLORS["text_primary"],
+                "fontSize": "15px",
+                "fontWeight": "600",
                 "letterSpacing": "0.3px",
                 "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
             })
@@ -574,13 +745,14 @@ app.layout = html.Div(style={
         # Connection Info Section
         html.Div(style={
             "background": f"linear-gradient(135deg, {THEME_COLORS['surface']} 0%, {THEME_COLORS['card']} 100%)",
-            "padding": "36px 44px",
-            "borderRadius": "16px",
-            "marginBottom": "40px",
+            "padding": "40px 48px",
+            "borderRadius": "20px",
+            "marginBottom": "48px",
             "border": f"1px solid {THEME_COLORS['border']}",
-            "boxShadow": f"0 10px 40px rgba(0, 0, 0, 0.45), 0 5px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
+            "boxShadow": f"0 12px 48px rgba(0, 0, 0, 0.5), 0 6px 24px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1)",
             "backdropFilter": "blur(24px)",
-            "position": "relative"
+            "position": "relative",
+            "transition": "all 0.3s ease"
         }, children=[
             html.Div(id="connection-info", style={
                 "display": "flex",
@@ -601,24 +773,24 @@ app.layout = html.Div(style={
         # KPI Section
         html.Div(style={
             "background": f"linear-gradient(135deg, {THEME_COLORS['surface']} 0%, {THEME_COLORS['card']} 100%)",
-            "padding": "40px",
-            "borderRadius": "16px",
-            "marginBottom": "40px",
+            "padding": "44px",
+            "borderRadius": "20px",
+            "marginBottom": "48px",
             "border": f"1px solid {THEME_COLORS['border']}",
-            "boxShadow": f"0 10px 40px rgba(0, 0, 0, 0.45), 0 5px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
+            "boxShadow": f"0 12px 48px rgba(0, 0, 0, 0.5), 0 6px 24px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1)",
             "backdropFilter": "blur(24px)",
-            "position": "relative"
+            "position": "relative",
+            "transition": "all 0.3s ease"
         }, children=[
             html.H3("Key Performance Indicators", style={
-                "margin": "0 0 28px 0",
-                "fontSize": "22px",
+                "margin": "0 0 32px 0",
+                "fontSize": "24px",
                 "color": THEME_COLORS["text_primary"],
-                "fontWeight": "700",
-                "letterSpacing": "0.5px",
+                "fontWeight": "800",
+                "letterSpacing": "1.2px",
                 "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif",
                 "textAlign": "center",
-                "textTransform": "uppercase",
-                "letterSpacing": "1px"
+                "textTransform": "uppercase"
             }),
             html.Div(id="kpi-container", style={
                 "display": "grid",
@@ -630,24 +802,24 @@ app.layout = html.Div(style={
         # Metrics Cards Container
         html.Div(style={
             "background": f"linear-gradient(135deg, {THEME_COLORS['surface']} 0%, {THEME_COLORS['card']} 100%)",
-            "padding": "40px",
-            "borderRadius": "16px",
-            "marginBottom": "40px",
+            "padding": "44px",
+            "borderRadius": "20px",
+            "marginBottom": "48px",
             "border": f"1px solid {THEME_COLORS['border']}",
-            "boxShadow": f"0 10px 40px rgba(0, 0, 0, 0.45), 0 5px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
+            "boxShadow": f"0 12px 48px rgba(0, 0, 0, 0.5), 0 6px 24px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1)",
             "backdropFilter": "blur(24px)",
-            "position": "relative"
+            "position": "relative",
+            "transition": "all 0.3s ease"
         }, children=[
             html.H3("Current Metrics", style={
-                "margin": "0 0 28px 0",
-                "fontSize": "22px",
+                "margin": "0 0 32px 0",
+                "fontSize": "24px",
                 "color": THEME_COLORS["text_primary"],
-                "fontWeight": "700",
-                "letterSpacing": "0.5px",
+                "fontWeight": "800",
+                "letterSpacing": "1.2px",
                 "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif",
                 "textAlign": "center",
-                "textTransform": "uppercase",
-                "letterSpacing": "1px"
+                "textTransform": "uppercase"
             }),
             html.Div(id="metrics-container", style={
                 "display": "grid",
@@ -660,85 +832,65 @@ app.layout = html.Div(style={
         html.Div(style={
             "display": "grid",
             "gridTemplateColumns": "repeat(2, 1fr)",
-            "gap": "32px",
-            "marginBottom": "40px"
+            "gap": "36px",
+            "marginBottom": "48px"
         }, children=[
             # Link State Explanation Panel
             html.Div(style={
                 "background": f"linear-gradient(135deg, {THEME_COLORS['surface']} 0%, {THEME_COLORS['card']} 100%)",
-                "padding": "32px",
-                "borderRadius": "16px",
+                "padding": "40px",
+                "borderRadius": "20px",
                 "border": f"1px solid {THEME_COLORS['border']}",
-                "boxShadow": f"0 10px 40px rgba(0, 0, 0, 0.45), 0 5px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
-                "backdropFilter": "blur(24px)"
+                "boxShadow": f"0 12px 48px rgba(0, 0, 0, 0.5), 0 6px 24px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1)",
+                "backdropFilter": "blur(24px)",
+                "position": "relative",
+                "overflow": "hidden",
+                "transition": "all 0.4s cubic-bezier(0.4, 0, 0.2, 1)"
             }, children=[
                 html.H4("Link State Analysis", style={
-                    "margin": "0 0 20px 0",
-                    "fontSize": "18px",
+                    "margin": "0 0 28px 0",
+                    "fontSize": "22px",
                     "color": THEME_COLORS["text_primary"],
-                    "fontWeight": "700",
-                    "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
+                    "fontWeight": "800",
+                    "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif",
+                    "letterSpacing": "0.8px"
                 }),
                 html.Div(id="link-state-panel", style={
-                    "color": THEME_COLORS["text_secondary"],
-                    "fontSize": "14px",
-                    "lineHeight": "1.8",
                     "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
                 })
             ]),
             # Cross-Layer Insight Box
             html.Div(style={
                 "background": f"linear-gradient(135deg, {THEME_COLORS['surface']} 0%, {THEME_COLORS['card']} 100%)",
-                "padding": "32px",
-                "borderRadius": "16px",
+                "padding": "40px",
+                "borderRadius": "20px",
                 "border": f"1px solid {THEME_COLORS['border']}",
-                "boxShadow": f"0 10px 40px rgba(0, 0, 0, 0.45), 0 5px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
-                "backdropFilter": "blur(24px)"
+                "boxShadow": f"0 12px 48px rgba(0, 0, 0, 0.5), 0 6px 24px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1)",
+                "backdropFilter": "blur(24px)",
+                "position": "relative",
+                "overflow": "hidden",
+                "transition": "all 0.4s cubic-bezier(0.4, 0, 0.2, 1)"
             }, children=[
                 html.H4("Cross-Layer Insights", style={
-                    "margin": "0 0 20px 0",
-                    "fontSize": "18px",
+                    "margin": "0 0 28px 0",
+                    "fontSize": "22px",
                     "color": THEME_COLORS["text_primary"],
-                    "fontWeight": "700",
-                    "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
+                    "fontWeight": "800",
+                    "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif",
+                    "letterSpacing": "0.8px"
                 }),
                 html.Div(id="cross-layer-insight", style={
-                    "color": THEME_COLORS["text_secondary"],
-                    "fontSize": "14px",
-                    "lineHeight": "1.8",
                     "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
                 })
             ])
         ]),
 
-        # Metric Freshness and Sampling Information
-        html.Div(style={
-            "background": f"linear-gradient(135deg, {THEME_COLORS['surface']} 0%, {THEME_COLORS['card']} 100%)",
-            "padding": "24px 32px",
-            "borderRadius": "16px",
-            "marginBottom": "40px",
-            "border": f"1px solid {THEME_COLORS['border']}",
-            "boxShadow": f"0 10px 40px rgba(0, 0, 0, 0.45), 0 5px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
-            "backdropFilter": "blur(24px)"
-        }, children=[
-            html.Div(id="sampling-info", style={
-                "display": "flex",
-                "justifyContent": "space-between",
-                "alignItems": "center",
-                "flexWrap": "wrap",
-                "gap": "16px",
-                "color": THEME_COLORS["text_secondary"],
-                "fontSize": "13px",
-                "fontFamily": "'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', sans-serif"
-            })
-        ]),
-
-        # Charts Section - Refined Research-Oriented Charts
+        # Charts Section - Research-Oriented Charts with Proper Grid Alignment
         html.Div(className="chart-grid-3", style={
             "display": "grid",
             "gridTemplateColumns": "repeat(3, 1fr)",
-            "gap": "32px",
-            "marginBottom": "48px"
+            "gap": "36px",
+            "marginBottom": "40px"
         }, children=[
             html.Div(
                 className="card-hover-effect",
@@ -746,6 +898,22 @@ app.layout = html.Div(style={
                 title="Signal Strength vs Time: Displays RSSI (dBm) and Signal percentage over time. Shows signal quality trends, mobility effects, and interference patterns.",
                 children=[
                     dcc.Graph(id="chart1-signal-strength", config={"displayModeBar": False, "responsive": True})
+                ]
+            ),
+            html.Div(
+                className="card-hover-effect",
+                style={**GRAPH_STYLE, "cursor": "help"},
+                title="RSSI Variation Relative to Rolling Mean: Shows difference between current RSSI and rolling average (ΔRSSI). Captures signal dynamics, mobility, and fading effects that explain rate fallback and latency spikes.",
+                children=[
+                    dcc.Graph(id="chart2-rssi-delta", config={"displayModeBar": False, "responsive": True})
+                ]
+            ),
+            html.Div(
+                className="card-hover-effect",
+                style={**GRAPH_STYLE, "cursor": "help"},
+                title="RTT Variance (Jitter) Over Time: Shows RTT variance/jitter (mdev) over time. Mean RTT alone hides instability; variance reveals network turbulence and quality issues.",
+                children=[
+                    dcc.Graph(id="chart4-rtt-jitter", config={"displayModeBar": False, "responsive": True})
                 ]
             ),
             html.Div(
@@ -759,9 +927,9 @@ app.layout = html.Div(style={
             html.Div(
                 className="card-hover-effect",
                 style={**GRAPH_STYLE, "cursor": "help"},
-                title="RTT Variability Analysis: Shows latency over time with moving average and confidence bands. Identifies latency spikes, jitter, and network stability issues.",
+                title="Relationship Between Signal Strength and Network Latency: Scatter plot showing RSSI vs RTT correlation. Demonstrates that good signal does not always mean low latency.",
                 children=[
-                    dcc.Graph(id="chart4-rtt-variability", config={"displayModeBar": False, "responsive": True})
+                    dcc.Graph(id="chart8-rssi-rtt-scatter", config={"displayModeBar": False, "responsive": True})
                 ]
             ),
             html.Div(
@@ -771,13 +939,30 @@ app.layout = html.Div(style={
                 children=[
                     dcc.Graph(id="chart5-stability-gauge", config={"displayModeBar": False, "responsive": True})
                 ]
-            ),
+            )
+        ]),
+        
+        # Last 2 Charts in 1x2 Grid Format
+        html.Div(style={
+            "display": "grid",
+            "gridTemplateColumns": "repeat(2, 1fr)",
+            "gap": "36px",
+            "marginBottom": "56px"
+        }, children=[
             html.Div(
                 className="card-hover-effect",
                 style={**GRAPH_STYLE, "cursor": "help"},
                 title="Anomaly Timeline: Binary timeline showing when abnormal network behavior occurred. Flags signal drops, high latency, or throughput degradation.",
                 children=[
                     dcc.Graph(id="chart6-anomaly-timeline", config={"displayModeBar": False, "responsive": True})
+                ]
+            ),
+            html.Div(
+                className="card-hover-effect",
+                style={**GRAPH_STYLE, "cursor": "help"},
+                title="MAC-Layer Retransmission Activity Over Time: Shows TX retries/retransmissions from iw station dump. Explains RTT increases, shows MAC-layer stress, and connects PHY ↔ Network layers.",
+                children=[
+                    dcc.Graph(id="chart7-retransmissions", config={"displayModeBar": False, "responsive": True})
                 ]
             )
         ]),
@@ -795,10 +980,13 @@ app.layout = html.Div(style={
     Output("cross-layer-insight", "children"),
     Output("sampling-info", "children"),
     Output("chart1-signal-strength", "figure"),
+    Output("chart2-rssi-delta", "figure"),
     Output("chart3-rx-tx-phy-rate", "figure"),
-    Output("chart4-rtt-variability", "figure"),
+    Output("chart4-rtt-jitter", "figure"),
     Output("chart5-stability-gauge", "figure"),
     Output("chart6-anomaly-timeline", "figure"),
+    Output("chart7-retransmissions", "figure"),
+    Output("chart8-rssi-rtt-scatter", "figure"),
     Input("update-interval", "n_intervals")
 )
 def update_dashboard_components(n: int):
@@ -820,7 +1008,7 @@ def update_dashboard_components(n: int):
     except Exception as e:
         # If lock fails, return empty state
         empty_layout = create_empty_figure_layout()
-        return [], [], [], "Collecting data...", "Collecting data...", "Initializing...", empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
+        return [], [], [], "Collecting data...", "Collecting data...", "Initializing...", empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
     
     # Enterprise connection info badges - Premium Design
     conn_badges = [
@@ -828,13 +1016,13 @@ def update_dashboard_components(n: int):
             style={
                 "display": "flex",
                 "alignItems": "center",
-                "gap": "10px",
-                "padding": "12px 20px",
+                "gap": "12px",
+                "padding": "14px 24px",
                 "background": f"linear-gradient(135deg, {THEME_COLORS['card']} 0%, {THEME_COLORS['card_hover']} 100%)",
-                "borderRadius": "10px",
+                "borderRadius": "12px",
                 "border": f"1px solid {THEME_COLORS['border']}",
-                "boxShadow": "0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
-                "transition": "all 0.3s ease",
+                "boxShadow": "0 4px 12px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
+                "transition": "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
                 "cursor": "help"
             },
             title="SSID (Service Set Identifier): The name of the WiFi network you are connected to.",
@@ -848,13 +1036,13 @@ def update_dashboard_components(n: int):
             style={
                 "display": "flex",
                 "alignItems": "center",
-                "gap": "10px",
-                "padding": "12px 20px",
+                "gap": "12px",
+                "padding": "14px 24px",
                 "background": f"linear-gradient(135deg, {THEME_COLORS['card']} 0%, {THEME_COLORS['card_hover']} 100%)",
-                "borderRadius": "10px",
+                "borderRadius": "12px",
                 "border": f"1px solid {THEME_COLORS['border']}",
-                "boxShadow": "0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
-                "transition": "all 0.3s ease",
+                "boxShadow": "0 4px 12px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
+                "transition": "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
                 "cursor": "help"
             },
             title="Radio Type: The WiFi standard being used (e.g., 802.11ac, 802.11ax/WiFi 6). Determines maximum speed and features.",
@@ -868,13 +1056,13 @@ def update_dashboard_components(n: int):
             style={
                 "display": "flex",
                 "alignItems": "center",
-                "gap": "10px",
-                "padding": "12px 20px",
+                "gap": "12px",
+                "padding": "14px 24px",
                 "background": f"linear-gradient(135deg, {THEME_COLORS['card']} 0%, {THEME_COLORS['card_hover']} 100%)",
-                "borderRadius": "10px",
+                "borderRadius": "12px",
                 "border": f"1px solid {THEME_COLORS['border']}",
-                "boxShadow": "0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
-                "transition": "all 0.3s ease",
+                "boxShadow": "0 4px 12px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
+                "transition": "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
                 "cursor": "help"
             },
             title="Channel: The WiFi frequency channel number. Different channels help avoid interference from other networks.",
@@ -888,13 +1076,13 @@ def update_dashboard_components(n: int):
             style={
                 "display": "flex",
                 "alignItems": "center",
-                "gap": "10px",
-                "padding": "12px 20px",
+                "gap": "12px",
+                "padding": "14px 24px",
                 "background": f"linear-gradient(135deg, {THEME_COLORS['card']} 0%, {THEME_COLORS['card_hover']} 100%)",
-                "borderRadius": "10px",
+                "borderRadius": "12px",
                 "border": f"1px solid {THEME_COLORS['border']}",
-                "boxShadow": "0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.05)",
-                "transition": "all 0.3s ease",
+                "boxShadow": "0 4px 12px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08)",
+                "transition": "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
                 "cursor": "help"
             },
             title="BSSID (Basic Service Set Identifier): The MAC address of the access point you are connected to. Unique identifier for the access point.",
@@ -908,15 +1096,15 @@ def update_dashboard_components(n: int):
     
     if df.empty:
         empty_layout = create_empty_figure_layout()
-        sampling_text = f"Sampling: {SAMPLE_INTERVAL_SECONDS}s interval • Data Sources: Linux iw, iwconfig, ping • Interface: {INTERFACE}"
-        return conn_badges, [], [], html.Div("Collecting data..."), html.Div("Collecting data..."), sampling_text, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
+        sampling_text = "Samples: 0 • Duration: 0.0s"
+        return conn_badges, [], [], html.Div("Collecting data..."), html.Div("Collecting data..."), sampling_text, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
 
     try:
         latest_metrics = df.iloc[-1]
     except (IndexError, KeyError):
         empty_layout = create_empty_figure_layout()
-        sampling_text = f"Sampling: {SAMPLE_INTERVAL_SECONDS}s interval • Data Sources: Linux iw, iwconfig, ping • Interface: {INTERFACE}"
-        return conn_badges, [], [], html.Div("No data available"), html.Div("No data available"), sampling_text, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
+        sampling_text = "Samples: 0 • Duration: 0.0s"
+        return conn_badges, [], [], html.Div("No data available"), html.Div("No data available"), sampling_text, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
     
     # Generate KPI cards with error handling
     try:
@@ -942,16 +1130,19 @@ def update_dashboard_components(n: int):
     # Generate refined charts - with error handling
     try:
         chart1 = create_chart1_signal_strength(df)
+        chart2 = create_chart2_rssi_delta(df)
         chart3 = create_chart3_rx_tx_phy_rate(df)
-        chart4 = create_chart4_rtt_variability(df)
+        chart4 = create_chart4_rtt_jitter(df)
         chart5 = create_chart5_stability_gauge(df)
         chart6 = create_chart6_anomaly_timeline(df)
+        chart7 = create_chart7_retransmissions(df)
+        chart8 = create_chart8_rssi_rtt_scatter(df)
     except Exception as chart_error:
         # If chart generation fails, return empty layouts
         empty_layout = create_empty_figure_layout()
-        chart1 = chart3 = chart4 = chart5 = chart6 = empty_layout
+        chart1 = chart2 = chart3 = chart4 = chart5 = chart6 = chart7 = chart8 = empty_layout
     
-    return conn_badges, kpi_cards, metric_cards, link_state_text, cross_layer_text, sampling_text, chart1, chart3, chart4, chart5, chart6
+    return conn_badges, kpi_cards, metric_cards, link_state_text, cross_layer_text, sampling_text, chart1, chart2, chart3, chart4, chart5, chart6, chart7, chart8
 
 # ================= CHART GENERATORS =================
 
@@ -987,7 +1178,7 @@ def create_base_layout(title: str) -> dict:
             "linecolor": THEME_COLORS["border"],
             "linewidth": 1
         },
-        "margin": {"l": 70, "r": 50, "t": 90, "b": 70},
+        "margin": {"l": 75, "r": 55, "t": 95, "b": 75},
         "hovermode": "x unified",
         "showlegend": True,
         "legend": {
@@ -1092,19 +1283,33 @@ def create_metric_cards(latest: pd.Series) -> list:
         ) for metric in metrics
     ]
 
-def generate_link_state_explanation(df: pd.DataFrame, latest: pd.Series) -> str:
+def generate_link_state_explanation(df: pd.DataFrame, latest: pd.Series) -> list:
     """
-    Generates rule-based link state explanation.
+    Generates beautiful rule-based link state explanation with visual indicators.
     
     Args:
         df: DataFrame with metric history
         latest: Latest metric values
         
     Returns:
-        Text explanation of current link state
+        HTML elements with styled link state explanation
     """
     if df.empty or len(df) < 10:
-        return "Insufficient data for state analysis. Collecting samples..."
+        return html.Div([
+            html.Div("Insufficient data for state analysis.", style={
+                "color": THEME_COLORS["text_secondary"],
+                "textAlign": "center",
+                "fontSize": "14px",
+                "marginBottom": "8px",
+                "fontWeight": "500"
+            }),
+            html.Div("Collecting samples...", style={
+                "color": THEME_COLORS["text_tertiary"],
+                "textAlign": "center",
+                "fontSize": "12px",
+                "fontStyle": "italic"
+            })
+        ])
     
     # Analyze recent window (last 20 samples)
     recent = df.tail(20)
@@ -1130,38 +1335,144 @@ def generate_link_state_explanation(df: pd.DataFrame, latest: pd.Series) -> str:
     signal_str = f"{signal_mean:.0f}%" if signal_mean is not None else "N/A"
     rtt_str = f"{rtt_mean:.1f}ms" if rtt_mean is not None else "N/A"
     
+    # State colors
     if signal_mean is not None and signal_mean >= 70 and signal_trend == "stable" and rtt_mean is not None and rtt_mean < 50 and rtt_trend == "stable":
         state = "STABLE"
         state_color = THEME_COLORS["success"]
-        explanation = f"Link is stable. Signal: {signal_str} ({signal_trend}), RTT: {rtt_str} ({rtt_trend}), PHY rates stable."
+        state_bg = f"linear-gradient(135deg, {THEME_COLORS['success']}15 0%, {THEME_COLORS['success']}05 100%)"
+        border_color = THEME_COLORS["success"]
+        explanation = f"Link is stable with consistent performance. Signal: {signal_str} ({signal_trend}), RTT: {rtt_str} ({rtt_trend}), PHY rates stable."
     elif signal_mean is not None and signal_mean >= 50 and (signal_trend in ["stable", "variable"] or rtt_trend in ["stable", "variable"]):
         state = "DEGRADING"
         state_color = THEME_COLORS["warning"]
+        state_bg = f"linear-gradient(135deg, {THEME_COLORS['warning']}15 0%, {THEME_COLORS['warning']}05 100%)"
+        border_color = THEME_COLORS["warning"]
         explanation = f"Link shows degradation signs. Signal: {signal_str} ({signal_trend}), RTT: {rtt_str} ({rtt_trend}), PHY rates {phy_trend}."
     else:
         state = "UNSTABLE"
         state_color = THEME_COLORS["error"]
-        explanation = f"Link is unstable. Signal: {signal_str} ({signal_trend}) if available, RTT: {rtt_str} ({rtt_trend}) if available, high variability detected."
+        state_bg = f"linear-gradient(135deg, {THEME_COLORS['error']}15 0%, {THEME_COLORS['error']}05 100%)"
+        border_color = THEME_COLORS["error"]
+        explanation = f"Link is unstable with high variability. Signal: {signal_str} ({signal_trend}) if available, RTT: {rtt_str} ({rtt_trend}) if available, high variability detected."
     
-    return [
-        html.Strong(f"State: {state}", style={"color": state_color}),
-        html.Br(),
-        explanation
-    ]
+    # Trend badges
+    def get_trend_badge(trend, value_str, label):
+        if trend == "stable":
+            badge_color = THEME_COLORS["success"]
+        elif trend == "variable":
+            badge_color = THEME_COLORS["warning"]
+        else:
+            badge_color = THEME_COLORS["error"]
+        
+        return html.Div([
+            html.Span(f"{label}: ", style={"color": THEME_COLORS["text_secondary"], "fontSize": "12px", "fontWeight": "500"}),
+            html.Span(value_str, style={"color": THEME_COLORS["text_primary"], "fontSize": "12px", "fontWeight": "600", "marginRight": "8px"}),
+            html.Span(trend.upper(), style={
+                "color": badge_color,
+                "fontSize": "10px",
+                "fontWeight": "600",
+                "padding": "2px 8px",
+                "background": f"{badge_color}20",
+                "borderRadius": "4px",
+                "textTransform": "uppercase",
+                "letterSpacing": "0.5px"
+            })
+        ], style={"display": "flex", "alignItems": "center", "marginBottom": "8px"})
+    
+    return html.Div([
+        # State badge
+        html.Div([
+            html.Div([
+                html.Div("Link State", style={
+                    "fontSize": "11px",
+                    "color": THEME_COLORS["text_secondary"],
+                    "textTransform": "uppercase",
+                    "letterSpacing": "1px",
+                    "marginBottom": "4px",
+                    "fontWeight": "600",
+                    "textAlign": "center"
+                }),
+                html.Div(state, style={
+                    "fontSize": "24px",
+                    "fontWeight": "800",
+                    "color": state_color,
+                    "letterSpacing": "0.5px",
+                    "textShadow": f"0 2px 8px {state_color}40",
+                    "textAlign": "center"
+                })
+            ])
+        ], style={
+            "display": "flex",
+            "alignItems": "center",
+            "justifyContent": "center",
+            "padding": "24px",
+            "background": state_bg,
+            "borderRadius": "16px",
+            "border": f"2px solid {border_color}50",
+            "marginBottom": "24px",
+            "boxShadow": f"0 4px 16px {border_color}20"
+        }),
+        
+        # Explanation text
+        html.Div(explanation, style={
+            "color": THEME_COLORS["text_primary"],
+            "fontSize": "13px",
+            "lineHeight": "1.7",
+            "marginBottom": "16px",
+            "fontWeight": "400",
+            "textAlign": "left"
+        }),
+        
+        # Metrics breakdown
+        html.Div([
+            html.Div("Metrics Breakdown", style={
+                "fontSize": "11px",
+                "color": THEME_COLORS["text_secondary"],
+                "textTransform": "uppercase",
+                "letterSpacing": "1px",
+                "marginBottom": "12px",
+                "fontWeight": "600",
+                "textAlign": "center"
+            }),
+            get_trend_badge(signal_trend, signal_str, "Signal"),
+            get_trend_badge(rtt_trend, rtt_str, "RTT"),
+            get_trend_badge(phy_trend, "PHY Rates", "PHY")
+        ], style={
+            "padding": "20px",
+            "background": f"{THEME_COLORS['card']}90",
+            "borderRadius": "12px",
+            "border": f"1px solid {THEME_COLORS['border']}50",
+            "boxShadow": "0 2px 8px rgba(0, 0, 0, 0.2)"
+        })
+    ])
 
 def generate_cross_layer_insight(df: pd.DataFrame, latest: pd.Series):
     """
-    Generates cross-layer insight highlighting PHY-network layer relationships.
+    Generates beautiful cross-layer insight highlighting PHY-network layer relationships.
     
     Args:
         df: DataFrame with metric history
         latest: Latest metric values
         
     Returns:
-        HTML elements or text insight about cross-layer behavior
+        HTML elements with styled cross-layer insight
     """
     if df.empty or len(df) < 10:
-        return html.Div("Insufficient data for cross-layer analysis. Collecting samples...")
+        return html.Div([
+            html.Div("Insufficient data for cross-layer analysis.", style={
+                "color": THEME_COLORS["text_secondary"],
+                "textAlign": "center",
+                "fontSize": "14px",
+                "marginBottom": "8px",
+                "fontWeight": "500"
+            }),
+            html.Div("Collecting samples...", style={
+                "color": THEME_COLORS["text_tertiary"],
+                "textAlign": "center",
+                "fontSize": "12px",
+                "fontStyle": "italic"
+            })
+        ])
     
     recent = df.tail(20)
     
@@ -1169,10 +1480,12 @@ def generate_cross_layer_insight(df: pd.DataFrame, latest: pd.Series):
     rx_vals = recent['rx_mbps'].dropna()
     tx_vals = recent['tx_mbps'].dropna()
     phy_stable = False
+    phy_variance = None
     if len(rx_vals) > 0 and len(tx_vals) > 0:
         rx_std = rx_vals.std()
         tx_std = tx_vals.std()
         phy_stable = (rx_std < 20 and tx_std < 20)
+        phy_variance = max(rx_std, tx_std)
     
     # Network layer (RTT) behavior
     rtt_vals = recent['rtt_ms'].dropna()
@@ -1184,27 +1497,142 @@ def generate_cross_layer_insight(df: pd.DataFrame, latest: pd.Series):
     # Generate insight with proper None handling
     rtt_mean_str = f"{rtt_mean:.1f}ms" if rtt_mean is not None else "N/A"
     rtt_std_str = f"{rtt_std:.1f}ms" if rtt_std is not None else "N/A"
+    phy_variance_str = f"{phy_variance:.1f} Mbps" if phy_variance is not None else "N/A"
     
+    # Determine insight type and styling
     if phy_stable and rtt_high:
-        return [
-            html.Strong("PHY-Network Mismatch: "),
-            f"PHY rates are stable (RX/TX variance < 20 Mbps), but RTT is elevated ({rtt_mean_str}). This suggests network-layer congestion or upstream issues, not PHY-layer problems."
-        ]
+        insight_type = "PHY-Network Mismatch"
+        insight_color = THEME_COLORS["warning"]
+        insight_bg = f"linear-gradient(135deg, {THEME_COLORS['warning']}15 0%, {THEME_COLORS['warning']}05 100%)"
+        border_color = THEME_COLORS["warning"]
+        insight_text = f"PHY rates are stable (RX/TX variance < 20 Mbps), but RTT is elevated ({rtt_mean_str}). This suggests network-layer congestion or upstream issues, not PHY-layer problems."
     elif phy_stable and rtt_variable:
-        return [
-            html.Strong("PHY-Network Mismatch: "),
-            f"PHY rates are stable, but RTT shows high variability (std: {rtt_std_str}). This indicates network-layer jitter independent of PHY stability."
-        ]
+        insight_type = "PHY-Network Mismatch"
+        insight_color = THEME_COLORS["warning"]
+        insight_bg = f"linear-gradient(135deg, {THEME_COLORS['warning']}15 0%, {THEME_COLORS['warning']}05 100%)"
+        border_color = THEME_COLORS["warning"]
+        insight_text = f"PHY rates are stable, but RTT shows high variability (std: {rtt_std_str}). This indicates network-layer jitter independent of PHY stability."
     elif not phy_stable and rtt_high:
-        return [
-            html.Strong("Cross-Layer Correlation: "),
-            f"Both PHY rates and RTT ({rtt_mean_str}) show degradation. This suggests PHY-layer issues (signal quality, interference) are affecting network performance."
-        ]
+        insight_type = "Cross-Layer Correlation"
+        insight_color = THEME_COLORS["error"]
+        insight_bg = f"linear-gradient(135deg, {THEME_COLORS['error']}15 0%, {THEME_COLORS['error']}05 100%)"
+        border_color = THEME_COLORS["error"]
+        insight_text = f"Both PHY rates and RTT ({rtt_mean_str}) show degradation. This suggests PHY-layer issues (signal quality, interference) are affecting network performance."
     else:
-        return [
-            html.Strong("Normal Operation: "),
-            f"PHY and network layers are consistent. RTT: {rtt_mean_str} if available, PHY rates within expected variance."
-        ]
+        insight_type = "Normal Operation"
+        insight_color = THEME_COLORS["success"]
+        insight_bg = f"linear-gradient(135deg, {THEME_COLORS['success']}15 0%, {THEME_COLORS['success']}05 100%)"
+        border_color = THEME_COLORS["success"]
+        insight_text = f"PHY and network layers are consistent. RTT: {rtt_mean_str} if available, PHY rates within expected variance."
+    
+    return html.Div([
+        # Insight header
+        html.Div([
+            html.Div([
+                html.Div("Cross-Layer Analysis", style={
+                    "fontSize": "11px",
+                    "color": THEME_COLORS["text_secondary"],
+                    "textTransform": "uppercase",
+                    "letterSpacing": "1px",
+                    "marginBottom": "4px",
+                    "fontWeight": "600"
+                }),
+                html.Div(insight_type, style={
+                    "fontSize": "20px",
+                    "fontWeight": "800",
+                    "color": insight_color,
+                    "letterSpacing": "0.5px",
+                    "textShadow": f"0 2px 8px {insight_color}40"
+                })
+            ])
+        ], style={
+            "display": "flex",
+            "alignItems": "center",
+            "justifyContent": "center",
+            "padding": "24px",
+            "background": insight_bg,
+            "borderRadius": "16px",
+            "border": f"2px solid {border_color}50",
+            "marginBottom": "24px",
+            "boxShadow": f"0 4px 16px {border_color}20"
+        }),
+        
+        # Insight text
+        html.Div(insight_text, style={
+            "color": THEME_COLORS["text_primary"],
+            "fontSize": "13px",
+            "lineHeight": "1.7",
+            "marginBottom": "16px",
+            "fontWeight": "400",
+            "textAlign": "left"
+        }),
+        
+        # Layer comparison
+        html.Div([
+            html.Div("Layer Comparison", style={
+                "fontSize": "11px",
+                "color": THEME_COLORS["text_secondary"],
+                "textTransform": "uppercase",
+                "letterSpacing": "1px",
+                "marginBottom": "12px",
+                "fontWeight": "600",
+                "textAlign": "center"
+            }),
+            html.Div([
+                html.Div([
+                    html.Div("PHY Layer", style={
+                        "fontSize": "12px",
+                        "fontWeight": "600",
+                        "color": THEME_COLORS["text_primary"],
+                        "marginBottom": "4px"
+                    }),
+                    html.Div([
+                        html.Span("Stable" if phy_stable else "Unstable", style={
+                            "color": THEME_COLORS["success"] if phy_stable else THEME_COLORS["error"],
+                            "fontSize": "11px",
+                            "fontWeight": "600",
+                            "marginRight": "6px"
+                        }),
+                        html.Span(f"(var: {phy_variance_str})", style={
+                            "color": THEME_COLORS["text_secondary"],
+                            "fontSize": "11px"
+                        })
+                    ])
+                ], style={"flex": "1", "paddingRight": "12px"}),
+                html.Div("↔", style={
+                    "fontSize": "20px",
+                    "color": THEME_COLORS["text_tertiary"],
+                    "margin": "0 8px"
+                }),
+                html.Div([
+                    html.Div("Network Layer", style={
+                        "fontSize": "12px",
+                        "fontWeight": "600",
+                        "color": THEME_COLORS["text_primary"],
+                        "marginBottom": "4px"
+                    }),
+                    html.Div([
+                        html.Span("Normal" if not rtt_high and not rtt_variable else ("High Latency" if rtt_high else "Variable"), style={
+                            "color": THEME_COLORS["success"] if not rtt_high and not rtt_variable else THEME_COLORS["error"],
+                            "fontSize": "11px",
+                            "fontWeight": "600",
+                            "marginRight": "6px"
+                        }),
+                        html.Span(f"(RTT: {rtt_mean_str})", style={
+                            "color": THEME_COLORS["text_secondary"],
+                            "fontSize": "11px"
+                        })
+                    ])
+                ], style={"flex": "1", "paddingLeft": "12px"})
+            ], style={"display": "flex", "alignItems": "center"})
+        ], style={
+            "padding": "20px",
+            "background": f"{THEME_COLORS['card']}90",
+            "borderRadius": "12px",
+            "border": f"1px solid {THEME_COLORS['border']}50",
+            "boxShadow": "0 2px 8px rgba(0, 0, 0, 0.2)"
+        })
+    ])
 
 def create_kpi_cards(df: pd.DataFrame) -> list:
     """
@@ -1438,45 +1866,6 @@ def create_chart1_signal_strength(df: pd.DataFrame) -> dict:
         }
     }
 
-# ================= CHART 2: RTT DISTRIBUTION =================
-
-def create_chart2_rtt_distribution(df: pd.DataFrame) -> dict:
-    """
-    Chart 2: RTT (Latency) Distribution (Histogram)
-    Shows latency spread to identify tail latency and jitter.
-    """
-    if df.empty:
-        return create_empty_figure_layout()
-    
-    rtt_vals = df["rtt_ms"].dropna()
-    
-    if len(rtt_vals) == 0:
-        return create_empty_figure_layout()
-    
-    return {
-        "data": [
-            go.Histogram(
-                x=rtt_vals,
-                name="RTT Distribution",
-                marker={"color": THEME_COLORS["warning"], "opacity": 0.8, "line": {"color": THEME_COLORS["border"], "width": 1}},
-                nbinsx=30,
-                hovertemplate="<b>RTT</b><br>%{x:.1f} ms<br>Count: %{y}<extra></extra>"
-            )
-        ],
-        "layout": {
-            **create_base_layout("RTT (Latency) Distribution"),
-            "yaxis": {
-                **create_base_layout("")["yaxis"],
-                "title": "Frequency"
-            },
-            "xaxis": {
-                **create_base_layout("")["xaxis"],
-                "title": "RTT (ms)",
-                "tickformat": ""
-            }
-        }
-    }
-
 # ================= CHART 3: RX VS TX PHY RATE =================
 
 def create_chart3_rx_tx_phy_rate(df: pd.DataFrame) -> dict:
@@ -1584,151 +1973,127 @@ def create_chart3_rx_tx_phy_rate(df: pd.DataFrame) -> dict:
         }
     }
 
-# ================= CHART 4: RTT VARIABILITY =================
+# ================= CHART 2: RSSI DELTA =================
 
-def create_chart4_rtt_variability(df: pd.DataFrame) -> dict:
+def create_chart2_rssi_delta(df: pd.DataFrame) -> dict:
     """
-    Chart 4: RTT Variability with Moving Average
-    Professional visualization showing RTT over time with moving average and statistical bands.
+    Chart 2: RSSI Variation Relative to Rolling Mean (ΔRSSI)
+    Shows difference between current RSSI and rolling average to capture signal dynamics.
     """
     if df.empty or len(df) == 0:
         return create_empty_figure_layout()
     
     timestamps = [datetime.fromtimestamp(ts) for ts in df["timestamp"]]
-    rtt_vals = df["rtt_ms"].dropna()
+    rssi_delta_vals = df["rssi_delta"].dropna()
     
-    if len(rtt_vals) == 0:
+    if len(rssi_delta_vals) == 0:
         return create_empty_figure_layout()
     
-    # Get corresponding timestamps for non-null RTT values
-    valid_indices = df["rtt_ms"].notna()
+    # Get corresponding timestamps for non-null delta values
+    valid_indices = df["rssi_delta"].notna()
     valid_timestamps = [timestamps[i] for i in range(len(timestamps)) if valid_indices.iloc[i]]
-    
-    # Convert rtt_vals to list for consistency
-    rtt_list = rtt_vals.tolist()
-    
-    # Calculate moving average (rolling window of 10 samples)
-    window_size = min(10, len(rtt_vals))
-    if window_size > 1:
-        moving_avg_series = rtt_vals.rolling(window=window_size, center=True).mean()
-        moving_std_series = rtt_vals.rolling(window=window_size, center=True).std()
-        
-        # Fill NaN values at edges with the first/last valid value
-        moving_avg_series = moving_avg_series.bfill().ffill()
-        moving_std_series = moving_std_series.fillna(0)
-        
-        # Convert to lists
-        moving_avg = moving_avg_series.tolist()
-        moving_std = moving_std_series.tolist()
-        
-        # Create upper and lower bounds (mean ± 1.5 * std)
-        upper_bound = [avg + 1.5 * std if pd.notna(avg) and pd.notna(std) else (avg if pd.notna(avg) else 0) for avg, std in zip(moving_avg, moving_std)]
-        lower_bound = [avg - 1.5 * std if pd.notna(avg) and pd.notna(std) else (avg if pd.notna(avg) else 0) for avg, std in zip(moving_avg, moving_std)]
-    else:
-        moving_avg = rtt_list
-        upper_bound = rtt_list
-        lower_bound = rtt_list
-    
-    # Calculate overall statistics for reference lines
-    if len(rtt_vals) > 0:
-        mean_rtt = rtt_vals.mean()
-        if pd.isna(mean_rtt):
-            mean_rtt = 0.0
-    else:
-        mean_rtt = 0.0
-    
-    # Detect events for annotation
-    events = detect_events(df)
-    rtt_events = [e for e in events if e["type"] == "rtt_spike"]
-    
-    # Create annotations for RTT spike events
-    annotations = []
-    for event in rtt_events:
-        # Find closest timestamp index in valid_timestamps
-        event_ts = event["timestamp"]
-        closest_idx = min(range(len(valid_timestamps)), key=lambda i: abs((valid_timestamps[i] - event_ts).total_seconds())) if len(valid_timestamps) > 0 else None
-        if closest_idx is not None and closest_idx < len(rtt_list):
-            rtt_val = rtt_list[closest_idx]
-            if abs((valid_timestamps[closest_idx] - event_ts).total_seconds()) < SAMPLE_INTERVAL_SECONDS * 2:
-                annotations.append({
-                    "x": event["timestamp"],
-                    "y": rtt_val,
-                    "text": "⚠ RTT Spike",
-                    "showarrow": True,
-                    "arrowhead": 2,
-                    "arrowcolor": THEME_COLORS["error"],
-                    "arrowsize": 1.5,
-                    "ax": 0,
-                    "ay": -30,
-                    "bgcolor": THEME_COLORS["error"],
-                    "bordercolor": THEME_COLORS["error"],
-                    "font": {"color": "white", "size": 10}
-                })
+    delta_list = rssi_delta_vals.tolist()
     
     return {
         "data": [
-            # Confidence band (upper bound)
             go.Scatter(
                 x=valid_timestamps,
-                y=upper_bound,
-                mode="lines",
-                name="Upper Bound",
-                line={"width": 0},
-                showlegend=False,
-                hoverinfo="skip"
-            ),
-            # Confidence band (lower bound)
-            go.Scatter(
-                x=valid_timestamps,
-                y=lower_bound,
-                mode="lines",
-                name="Confidence Band",
-                fill="tonexty",
-                fillcolor=f"rgba(248, 81, 73, 0.15)",
-                line={"width": 0},
-                showlegend=True,
-                hovertemplate="<b>Upper Bound</b><br>%{y:.1f} ms<extra></extra>"
-            ),
-            # Moving average line
-            go.Scatter(
-                x=valid_timestamps,
-                y=moving_avg,
-                mode="lines",
-                name="Moving Average",
-                line={"color": THEME_COLORS["primary"], "width": 2.5, "dash": "dash"},
-                hovertemplate="<b>Moving Avg</b><br>%{y:.1f} ms<br>%{x}<extra></extra>"
-            ),
-            # Actual RTT values
-            go.Scatter(
-                x=valid_timestamps,
-                y=rtt_list,
+                y=delta_list,
                 mode="lines+markers",
-                name="RTT",
-                line={"color": THEME_COLORS["warning"], "width": 2},
-                marker={"size": 3, "color": THEME_COLORS["warning"], "opacity": 0.6},
-                hovertemplate="<b>RTT</b><br>%{y:.1f} ms<br>%{x}<extra></extra>"
+                name="ΔRSSI",
+                line={"color": THEME_COLORS["primary"], "width": 2.5},
+                marker={"size": 4, "color": THEME_COLORS["primary"], "opacity": 0.7},
+                fill="tozeroy",
+                fillcolor=f"rgba(91, 158, 255, 0.15)",
+                hovertemplate="<b>ΔRSSI</b><br>%{y:.1f} dB<br>%{x}<extra></extra>"
             ),
-            # Mean reference line
+            # Zero reference line
             go.Scatter(
                 x=[valid_timestamps[0], valid_timestamps[-1]] if len(valid_timestamps) > 0 else [],
-                y=[mean_rtt, mean_rtt],
+                y=[0, 0],
                 mode="lines",
-                name="Mean",
-                line={"color": THEME_COLORS["success"], "width": 1.5, "dash": "dot"},
-                hovertemplate=f"<b>Mean</b><br>{mean_rtt:.1f} ms<extra></extra>"
+                name="Baseline",
+                line={"color": THEME_COLORS["text_secondary"], "width": 1, "dash": "dash"},
+                showlegend=False,
+                hovertemplate="<b>Baseline</b><br>0 dB<extra></extra>"
             )
         ],
         "layout": {
-            **create_base_layout("RTT Variability Analysis"),
+            **create_base_layout("RSSI Variation Relative to Rolling Mean"),
             "yaxis": {
                 **create_base_layout("")["yaxis"],
-                "title": "RTT (ms)"
+                "title": "ΔRSSI (dB)"
             },
             "xaxis": {
                 **create_base_layout("")["xaxis"],
                 "title": "Time"
+            }
+        }
+    }
+
+# ================= CHART 4: RTT VARIANCE/JITTER =================
+
+def create_chart4_rtt_jitter(df: pd.DataFrame) -> dict:
+    """
+    Chart 4: RTT Variance (Jitter) Over Time
+    Shows RTT variance/jitter (mdev) over time to reveal network turbulence.
+    Mean RTT alone hides instability; variance shows quality issues.
+    """
+    if df.empty or len(df) == 0:
+        return create_empty_figure_layout()
+    
+    timestamps = [datetime.fromtimestamp(ts) for ts in df["timestamp"]]
+    
+    # Use jitter from ping mdev if available, otherwise calculate variance
+    jitter_vals = df["rtt_jitter"].dropna()
+    
+    # If no jitter data, calculate variance from RTT values
+    if len(jitter_vals) == 0:
+        rtt_vals = df["rtt_ms"].dropna()
+        if len(rtt_vals) < 2:
+            return create_empty_figure_layout()
+        
+        # Calculate rolling variance (window of 10 samples)
+        window_size = min(10, len(rtt_vals))
+        if window_size > 1:
+            rolling_var = rtt_vals.rolling(window=window_size, center=True).std()
+            rolling_var = rolling_var.bfill().ffill()
+            jitter_vals = rolling_var
+        else:
+            return create_empty_figure_layout()
+    
+    # Get corresponding timestamps
+    valid_indices = df["rtt_jitter"].notna() if "rtt_jitter" in df.columns and len(df["rtt_jitter"].dropna()) > 0 else df["rtt_ms"].notna()
+    valid_timestamps = [timestamps[i] for i in range(len(timestamps)) if valid_indices.iloc[i] and i < len(jitter_vals)]
+    jitter_list = jitter_vals.tolist()[:len(valid_timestamps)]
+    
+    if len(jitter_list) == 0:
+        return create_empty_figure_layout()
+    
+    return {
+        "data": [
+            go.Scatter(
+                x=valid_timestamps,
+                y=jitter_list,
+                mode="lines+markers",
+                name="RTT Jitter (mdev)",
+                line={"color": THEME_COLORS["error"], "width": 2.5},
+                marker={"size": 4, "color": THEME_COLORS["error"], "opacity": 0.7},
+                fill="tozeroy",
+                fillcolor=f"rgba(239, 68, 68, 0.15)",
+                hovertemplate="<b>RTT Jitter</b><br>%{y:.2f} ms<br>%{x}<extra></extra>"
+            )
+        ],
+        "layout": {
+            **create_base_layout("RTT Variance (Jitter) Over Time"),
+            "yaxis": {
+                **create_base_layout("")["yaxis"],
+                "title": "Jitter (ms)"
             },
-            "annotations": annotations
+            "xaxis": {
+                **create_base_layout("")["xaxis"],
+                "title": "Time"
+            }
         }
     }
 
@@ -1841,80 +2206,165 @@ def create_chart6_anomaly_timeline(df: pd.DataFrame) -> dict:
         }
     }
 
-# ================= CHART 7: BANDWIDTH UTILIZATION =================
+# ================= CHART 7: RETRANSMISSIONS =================
 
-def create_chart7_bandwidth_utilization(df: pd.DataFrame) -> dict:
+def create_chart7_retransmissions(df: pd.DataFrame) -> dict:
     """
-    Chart 7: Bandwidth Utilization Over Time
-    Shows bandwidth utilization percentage over time to track network capacity usage.
+    Chart 7: MAC-Layer Retransmission Activity Over Time
+    Shows TX retries/retransmissions from iw station dump.
+    Explains RTT increases, shows MAC-layer stress, connects PHY ↔ Network layers.
     """
     if df.empty or len(df) == 0:
         return create_empty_figure_layout()
     
     timestamps = [datetime.fromtimestamp(ts) for ts in df["timestamp"]]
-    bw_util = df["bandwidth_util"].fillna(0)
+    retry_vals = df["tx_retries"].dropna()
     
-    return {
-        "data": [
-            go.Scatter(
-                x=timestamps,
-                y=bw_util,
-                mode="lines+markers",
-                name="Bandwidth Utilization",
-                line={"color": THEME_COLORS["warning"], "width": 2.5},
-                marker={"size": 4, "color": THEME_COLORS["warning"]},
-                fill="tozeroy",
-                fillcolor=f"rgba(210, 153, 34, 0.2)",
-                hovertemplate="<b>Bandwidth Util</b><br>%{y:.1f}%<br>%{x}<extra></extra>"
-            )
-        ],
-        "layout": {
-            **create_base_layout("Bandwidth Utilization Over Time"),
-            "yaxis": {
-                **create_base_layout("")["yaxis"],
-                "title": "Utilization (%)",
-                "range": [0, 100]
-            }
-        }
-    }
-
-# ================= CHART 8: LINK SPEED TREND =================
-
-def create_chart8_link_speed_trend(df: pd.DataFrame) -> dict:
-    """
-    Chart 8: Link Speed Trend Over Time
-    Shows link speed (Mbps) trend to visualize connection quality changes.
-    """
-    if df.empty or len(df) == 0:
+    if len(retry_vals) == 0:
         return create_empty_figure_layout()
     
-    timestamps = [datetime.fromtimestamp(ts) for ts in df["timestamp"]]
-    link_speed = df["link_speed_mbps"].dropna()
+    # Get corresponding timestamps for non-null retry values
+    valid_indices = df["tx_retries"].notna()
+    valid_timestamps = [timestamps[i] for i in range(len(timestamps)) if valid_indices.iloc[i]]
+    retry_list = retry_vals.tolist()
     
-    if len(link_speed) == 0:
-        return create_empty_figure_layout()
-    
-    # Get corresponding timestamps for non-null values
-    valid_timestamps = [timestamps[i] for i in range(len(timestamps)) if pd.notna(df["link_speed_mbps"].iloc[i])]
+    # Calculate retry rate (retries per sample) if we have enough data
+    retry_rate = None
+    if len(retry_list) > 1:
+        # Calculate difference between consecutive retry counts to get retries per interval
+        retry_diffs = [retry_list[i] - retry_list[i-1] if i > 0 else retry_list[i] for i in range(len(retry_list))]
+        retry_rate = retry_diffs
     
     return {
         "data": [
             go.Scatter(
                 x=valid_timestamps,
-                y=link_speed,
+                y=retry_list,
                 mode="lines+markers",
-                name="Link Speed",
-                line={"color": THEME_COLORS["success"], "width": 2.5},
-                marker={"size": 4, "color": THEME_COLORS["success"]},
-                hovertemplate="<b>Link Speed</b><br>%{y:.1f} Mbps<br>%{x}<extra></extra>"
+                name="TX Retries (Cumulative)",
+                line={"color": THEME_COLORS["warning"], "width": 2.5},
+                marker={"size": 4, "color": THEME_COLORS["warning"], "opacity": 0.7},
+                hovertemplate="<b>TX Retries</b><br>%{y}<br>%{x}<extra></extra>"
+            ),
+            # Add retry rate line if available
+            *([go.Scatter(
+                x=valid_timestamps[1:] if len(valid_timestamps) > 1 else [],
+                y=retry_rate[1:] if retry_rate and len(retry_rate) > 1 else [],
+                mode="lines",
+                name="Retry Rate (Δ)",
+                line={"color": THEME_COLORS["error"], "width": 2, "dash": "dash"},
+                yaxis="y2",
+                hovertemplate="<b>Retry Rate</b><br>%{y} retries<br>%{x}<extra></extra>"
+            )] if retry_rate and len(retry_rate) > 1 else [])
+        ],
+        "layout": {
+            **create_base_layout("MAC-Layer Retransmission Activity Over Time"),
+            "yaxis": {
+                **create_base_layout("")["yaxis"],
+                "title": "TX Retries (Cumulative)",
+                "side": "left",
+                "color": THEME_COLORS["warning"]
+            },
+            **({"yaxis2": {
+                "title": "Retry Rate (Δ)",
+                "overlaying": "y",
+                "side": "right",
+                "color": THEME_COLORS["error"],
+                "showgrid": False
+            }} if retry_rate and len(retry_rate) > 1 else {}),
+            "xaxis": {
+                **create_base_layout("")["xaxis"],
+                "title": "Time"
+            }
+        }
+    }
+
+# ================= CHART 8: RSSI VS RTT SCATTER =================
+
+def create_chart8_rssi_rtt_scatter(df: pd.DataFrame) -> dict:
+    """
+    Chart 8: Relationship Between Signal Strength and Network Latency (Scatter Plot)
+    Shows RSSI vs RTT correlation to demonstrate that good signal does not always mean low latency.
+    Direct cross-layer evidence showing correlation (or lack of it).
+    """
+    if df.empty or len(df) == 0:
+        return create_empty_figure_layout()
+    
+    # Get valid RSSI and RTT pairs
+    valid_mask = df["rssi_dbm"].notna() & df["rtt_ms"].notna()
+    rssi_vals = df["rssi_dbm"][valid_mask]
+    rtt_vals = df["rtt_ms"][valid_mask]
+    
+    if len(rssi_vals) == 0 or len(rtt_vals) == 0:
+        return create_empty_figure_layout()
+    
+    # Calculate correlation coefficient for annotation
+    correlation = np.corrcoef(rssi_vals, rtt_vals)[0, 1] if len(rssi_vals) > 1 else 0
+    
+    # Create color mapping based on RTT values (higher RTT = redder, lower = greener)
+    colors = []
+    for rtt in rtt_vals:
+        if rtt < 20:
+            colors.append(THEME_COLORS["success"])
+        elif rtt < 50:
+            colors.append(THEME_COLORS["primary"])
+        elif rtt < 100:
+            colors.append(THEME_COLORS["warning"])
+        else:
+            colors.append(THEME_COLORS["error"])
+    
+    return {
+        "data": [
+            go.Scatter(
+                x=rssi_vals,
+                y=rtt_vals,
+                mode="markers",
+                name="RSSI vs RTT",
+                marker={
+                    "size": 6,
+                    "color": colors,
+                    "opacity": 0.7,
+                    "line": {
+                        "width": 1,
+                        "color": THEME_COLORS["border"]
+                    }
+                },
+                hovertemplate="<b>RSSI:</b> %{x} dBm<br><b>RTT:</b> %{y:.1f} ms<extra></extra>"
             )
         ],
         "layout": {
-            **create_base_layout("Link Speed Trend"),
+            **create_base_layout("Relationship Between Signal Strength and Network Latency"),
+            "xaxis": {
+                **create_base_layout("")["xaxis"],
+                "title": "RSSI (dBm)",
+                "tickformat": "",
+                "range": [rssi_vals.min() - 5, rssi_vals.max() + 5] if len(rssi_vals) > 0 else None
+            },
             "yaxis": {
                 **create_base_layout("")["yaxis"],
-                "title": "Link Speed (Mbps)"
-            }
+                "title": "RTT (ms)",
+                "range": [0, max(rtt_vals.max() * 1.1, 100)] if len(rtt_vals) > 0 else None
+            },
+            "annotations": [
+                {
+                    "text": f"Correlation: {correlation:.2f}",
+                    "xref": "paper",
+                    "yref": "paper",
+                    "x": 0.98,
+                    "y": 0.02,
+                    "showarrow": False,
+                    "font": {
+                        "size": 11,
+                        "color": THEME_COLORS["text_secondary"]
+                    },
+                    "bgcolor": f"{THEME_COLORS['card']}CC",
+                    "bordercolor": THEME_COLORS["border"],
+                    "borderwidth": 1,
+                    "borderpad": 4,
+                    "xanchor": "right",
+                    "yanchor": "bottom"
+                }
+            ] if not np.isnan(correlation) else []
         }
     }
 
