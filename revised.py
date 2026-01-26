@@ -584,20 +584,24 @@ THEME_COLORS = {
 APP_FONT_FAMILY = "'Segoe UI', -apple-system, BlinkMacSystemFont, 'Inter', 'Roboto', sans-serif"
 
 CARD_STYLE = {
-    "background": THEME_COLORS["card"],
-    "padding": "20px",
-    "borderRadius": "8px",
-    "border": f"1px solid {THEME_COLORS['border']}",
+    "background": THEME_COLORS["glass"],
+    "padding": "18px",
+    "borderRadius": "12px",
+    "border": f"1px solid {THEME_COLORS['border_light']}",
+    "boxShadow": "0 10px 30px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04)",
+    "backdropFilter": "blur(14px)",
     "textAlign": "center",
     "transition": "all 0.3s ease"
 }
 
 GRAPH_STYLE = {
-    "background": THEME_COLORS["card"],
-    "borderRadius": "8px",
-    "border": f"1px solid {THEME_COLORS['border']}",
-    "padding": "20px",
-    "minHeight": "400px"
+    "background": THEME_COLORS["glass"],
+    "borderRadius": "12px",
+    "border": f"1px solid {THEME_COLORS['border_light']}",
+    "boxShadow": "0 14px 40px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.04)",
+    "backdropFilter": "blur(16px)",
+    "padding": "16px",
+    "minHeight": "380px"
 }
 
 # ================= DASH APPLICATION =================
@@ -647,8 +651,8 @@ app.index_string = '''
                 transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
             }
             .card-hover-effect:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+                transform: translateY(-3px);
+                box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55), 0 8px 22px rgba(0, 0, 0, 0.35) !important;
             }
         </style>
     </head>
@@ -670,33 +674,39 @@ app.layout = html.Div(style={
     # Minimal Header
     html.Header(style={
         "width": "100%",
-        "background": THEME_COLORS["surface"],
-        "padding": "20px 0",
-        "borderBottom": f"1px solid {THEME_COLORS['border']}"
+        "background": "rgba(10, 14, 26, 0.75)",
+        "backdropFilter": "blur(18px)",
+        "padding": "14px 0",
+        "borderBottom": f"1px solid {THEME_COLORS['border_light']}",
+        "position": "sticky",
+        "top": "0",
+        "zIndex": "999"
     }, children=[
         html.Div(style={
-            "maxWidth": "1800px",
+            "maxWidth": "1400px",
             "margin": "0 auto",
-            "padding": "0 36px",
+            "padding": "0 20px",
             "display": "flex",
             "alignItems": "center",
             "justifyContent": "space-between"
         }, children=[
             html.Span("WiFi Monitor", style={
-                "fontSize": "1.5rem",
-                "fontWeight": "600",
+                "fontSize": "1.1rem",
+                "fontWeight": "700",
                 "color": THEME_COLORS["text_primary"],
-                "letterSpacing": "-0.5px"
+                "letterSpacing": "0.2px"
             }),
             html.Div(id="connection-info", style={
                 "display": "flex",
-                "gap": "12px",
-                "alignItems": "center"
+                "gap": "10px",
+                "alignItems": "center",
+                "flexWrap": "wrap",
+                "justifyContent": "flex-end"
             })
         ])
     ]),
 
-    html.Div(style={"maxWidth": "1800px", "margin": "0 auto", "padding": "32px 36px"}, children=[
+    html.Div(style={"maxWidth": "1400px", "margin": "0 auto", "padding": "24px 20px"}, children=[
         # Auto-refresh interval
         dcc.Interval(
             id="update-interval",
@@ -730,8 +740,8 @@ app.layout = html.Div(style={
         html.Div(className="chart-grid-2", style={
             "display": "grid",
             "gridTemplateColumns": "repeat(2, 1fr)",
-            "gap": "24px",
-            "marginBottom": "32px"
+            "gap": "18px",
+            "marginBottom": "28px"
         }, children=[
             html.Div(
                 className="card-hover-effect",
@@ -829,72 +839,98 @@ def update_dashboard_components(n: int):
         empty_layout = create_empty_figure_layout()
         return [], [], [], empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
 
-    # Clean connection info badges
-    conn_badges = [
-        html.Div(
-            style={
-                "padding": "8px 16px",
-                "background": THEME_COLORS["card"],
-                "borderRadius": "6px",
-                "border": f"1px solid {THEME_COLORS['border']}",
-                "fontSize": "13px",
-                "color": THEME_COLORS["text_primary"]
-            },
-            children=[
-                html.Span(conn_info["ssid"], style={"fontWeight": "500"})
-            ]
-        ),
-        html.Div(
-            style={
-                "padding": "8px 16px",
-                "background": THEME_COLORS["card"],
-                "borderRadius": "6px",
-                "border": f"1px solid {THEME_COLORS['border']}",
-                "fontSize": "13px",
-                "color": THEME_COLORS["text_primary"]
-            },
-            children=[
-                html.Span(conn_info["radio"], style={"fontWeight": "500"})
-            ]
-        ),
-        html.Div(
-            style={
-                "padding": "8px 16px",
-                "background": THEME_COLORS["card"],
-                "borderRadius": "6px",
-                "border": f"1px solid {THEME_COLORS['border']}",
-                "fontSize": "13px",
-                "color": THEME_COLORS["text_primary"]
-            },
-            children=[
-                html.Span(f"Ch {conn_info['channel']}", style={"fontWeight": "500"})
-            ]
-        ),
-        html.Div(
-            style={
-                "padding": "8px 16px",
-                "background": THEME_COLORS["card"],
-                "borderRadius": "6px",
-                "border": f"1px solid {THEME_COLORS['border']}",
-                "fontSize": "11px",
-                "color": THEME_COLORS["text_secondary"],
-                "fontFamily": "'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace"
-            },
-            children=[
-                html.Span(conn_info.get("bssid", "N/A"), style={"fontWeight": "400"})
-            ]
-        )
-    ]
+    ssid = str(conn_info.get("ssid", "")).strip()
+    connected = bool(ssid and ssid.upper() not in {"N/A", "NOT CONNECTED", "DISCONNECTED"})
+
+    chip_base = {
+        "padding": "8px 12px",
+        "background": THEME_COLORS["glass"],
+        "borderRadius": "10px",
+        "border": f"1px solid {THEME_COLORS['border_light']}",
+        "backdropFilter": "blur(14px)",
+        "display": "flex",
+        "alignItems": "center",
+        "gap": "8px",
+        "lineHeight": "1",
+    }
+
+    def build_conn_badges(health_label: str, health_color: str) -> list:
+        return [
+            html.Div(
+                style={**chip_base, "fontSize": "13px", "color": THEME_COLORS["text_primary"]},
+                children=[
+                    html.Span(style={
+                        "display": "inline-block",
+                        "width": "8px",
+                        "height": "8px",
+                        "borderRadius": "999px",
+                        "background": health_color,
+                        "boxShadow": f"0 0 0 3px {health_color}20"
+                    }),
+                    html.Span(health_label, style={"fontWeight": "600"})
+                ]
+            ),
+            html.Div(
+                style={**chip_base, "fontSize": "13px", "color": THEME_COLORS["text_primary"]},
+                children=[html.Span(conn_info.get("ssid", "N/A"), style={"fontWeight": "500"})]
+            ),
+            html.Div(
+                style={**chip_base, "fontSize": "13px", "color": THEME_COLORS["text_primary"]},
+                children=[html.Span(conn_info.get("radio", "N/A"), style={"fontWeight": "500"})]
+            ),
+            html.Div(
+                style={
+                    **chip_base,
+                    "fontSize": "11px",
+                    "color": THEME_COLORS["text_secondary"],
+                    "fontFamily": "'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace"
+                },
+                children=[html.Span(conn_info.get("bssid", "N/A"), style={"fontWeight": "400"})]
+            )
+        ]
 
     if df.empty:
         empty_layout = create_empty_figure_layout()
+        if not connected:
+            conn_badges = build_conn_badges("Offline", THEME_COLORS["text_tertiary"])
+        else:
+            conn_badges = build_conn_badges("Starting", THEME_COLORS["primary"])
         return conn_badges, [], [], empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
 
     try:
         latest_metrics = df.iloc[-1]
     except (IndexError, KeyError):
         empty_layout = create_empty_figure_layout()
+        if not connected:
+            conn_badges = build_conn_badges("Offline", THEME_COLORS["text_tertiary"])
+        else:
+            conn_badges = build_conn_badges("Starting", THEME_COLORS["primary"])
         return conn_badges, [], [], empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout, empty_layout
+
+    # Health status derived from live metrics
+    try:
+        stability = float(latest_metrics.get("stability_score", 50.0))
+    except Exception:
+        stability = 50.0
+    try:
+        anomaly = int(latest_metrics.get("anomaly_flag", 0) or 0)
+    except Exception:
+        anomaly = 0
+
+    if not connected:
+        health_label, health_color = "Offline", THEME_COLORS["text_tertiary"]
+    elif anomaly == 1:
+        health_label, health_color = "Issue", THEME_COLORS["error"]
+    elif stability >= 80:
+        health_label, health_color = "Good", THEME_COLORS["success"]
+    elif stability >= 60:
+        health_label, health_color = "OK", THEME_COLORS["primary"]
+    elif stability >= 40:
+        health_label, health_color = "Fair", THEME_COLORS["warning"]
+    else:
+        health_label, health_color = "Poor", THEME_COLORS["error"]
+
+    conn_badges = build_conn_badges(health_label, health_color)
 
     # Generate KPI cards with error handling
     try:
