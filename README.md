@@ -18,7 +18,7 @@ A real -time, cross-platform WiFi network performance monitoring dashboard with 
 - **RTT Jitter Analysis**: Network turbulence detection through variance measurements
 - **MAC-Layer Metrics** (Linux only): Retransmission rate monitoring via `iw station dump`
 
-### 📈 Interactive Visualizations
+### 📈 Interactive Visualizations       
 - Signal Strength vs Time (dual-axis: RSSI + Signal %)
 - RX vs TX PHY Rate comparison
 - RTT Variance (Jitter) Over Time
