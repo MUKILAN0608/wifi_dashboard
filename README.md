@@ -1,6 +1,6 @@
 # WiFi Network Performance Monitor
 
-A real-time, cross-platform WiFi network performance monitoring dashboard with advanced analytics and visualization capabilities. This tool provides comprehensive insights into WiFi link quality, signal strength, latency, throughput, and network stability metrics.
+A real -time, cross-platform WiFi network performance monitoring dashboard with advanced analytics and visualization capabilities. This tool provides comprehensive insights into WiFi link quality, signal strength, latency, throughput, and network stability metrics.
 
 ## Features
 
